@@ -7,12 +7,8 @@ export default async function handler(req, res) {
     const htmlPath = path.join(process.cwd(), 'dslc_proposal_vercel.html');
     let html = fs.readFileSync(htmlPath, 'utf-8');
 
-    // Inject API key from environment variable
-    const apiKey = process.env.GEMINI_API_KEY || '';
-    html = html.replace(
-      'const apiKey = "";',
-      `const apiKey = "${apiKey}";`
-    );
+    // Serve HTML as-is (do not inject sensitive API keys into client-side code)
+    // The client should call the server-side proxy at /api/gemini for all Gemini requests.
 
     // Set response headers
     res.setHeader('Content-Type', 'text/html; charset=utf-8');

@@ -1,7 +1,7 @@
 {
   "buildCommand": "echo 'No build needed'",
   "framework": "static",
-  "public": ".",
+  "public": true,
   "rewrites": [
     {
       "source": "/",

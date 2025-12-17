@@ -554,11 +554,6 @@
     }
 
     async function callGeminiWithSystemPrompt({ systemPrompt, userText }) {
-      const apiKey = ""; // Injected by the environment
-
-      const model = 'gemini-2.5-flash-preview-09-2025';
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
       const body = {
         systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [
@@ -566,7 +561,7 @@
         ]
       };
 
-      const resp = await fetch(url, {
+      const resp = await fetch('/api/gemini', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -578,7 +573,7 @@
       }
 
       const data = await resp.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const text = data.text || (data.candidates?.[0]?.content?.parts?.[0]?.text);
       if (!text) throw new Error('No response text');
       return String(text).trim();
     }
@@ -718,8 +713,6 @@
     }
 
     async function callGemini(conversation) {
-      const apiKey = ""; // Injected by the environment
-
       const contents = conversation.map(msg => ({
         role: msg.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: msg.content }]
@@ -730,10 +723,7 @@
         contents
       };
 
-      const model = 'gemini-2.5-flash-preview-09-2025';
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-      const resp = await fetch(url, {
+      const resp = await fetch('/api/gemini', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -745,7 +735,7 @@
       }
 
       const data = await resp.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const text = data.text || (data.candidates?.[0]?.content?.parts?.[0]?.text);
       if (!text) throw new Error('No response text');
       return text;
     }
