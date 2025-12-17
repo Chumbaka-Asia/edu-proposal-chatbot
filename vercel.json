@@ -1,10 +1,9 @@
 {
   "buildCommand": "echo 'No build needed'",
-  "public": true,
-  "rewrites": [
+  "routes": [
     {
-      "source": "/",
-      "destination": "/api/serve.js"
+      "src": "^/$",
+      "dest": "/api/serve.js"
     }
   ]
 }
