@@ -96,6 +96,41 @@ Content-Security-Policy: frame-ancestors 'self' https://lms.chumbaka.asia;
 
 > **Note:** CSP's `frame-ancestors` accepts origins/hosts only — it cannot restrict by path. If you need path-level restrictions (e.g., allow only `/courses/200*`), implement a server-side check (for example, inspect the `Referer` header and conditionally include the CSP header) or host a proxy/redirect on the LMS domain.
 
+#### Recommended iframe snippet ✅
+
+Use this copy/paste-ready iframe inside the LMS (replace `https://your-deployment.vercel.app` with your actual Vercel URL):
+
+```html
+<iframe
+  src="https://your-deployment.vercel.app"
+  title="DSLC Mentor Chatbot"
+  width="100%"
+  height="800"
+  style="border:0; min-height:600px;"
+  loading="lazy"
+  sandbox="allow-scripts allow-same-origin allow-forms"
+  referrerpolicy="no-referrer"
+  allow="clipboard-write"
+></iframe>
+```
+
+- **Adjust `height`** to match the LMS frame; `width="100%"` is recommended.
+- **`sandbox`** keeps the embedded app secure; include `allow-same-origin` and `allow-scripts` if your app needs to run scripts or access same-origin features.
+- For two-way communication use `postMessage` (examples below).
+
+**Example: host → iframe**
+
+```js
+const iframe = document.querySelector('iframe');
+iframe.contentWindow.postMessage({ type: 'init', courseId: 200 }, 'https://your-deployment.vercel.app');
+```
+
+**Example: iframe → host**
+
+```js
+window.parent.postMessage({ type: 'ready' }, 'https://lms.chumbaka.asia');
+```
+
 
 ## Notes & tips
 
