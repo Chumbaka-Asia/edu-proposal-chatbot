@@ -1,3 +1,14 @@
 {
-  "buildCommand": "echo 'No build needed'"
+  "buildCommand": "echo 'No build needed'",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "frame-ancestors 'self' https://lms.chumbaka.asia;"
+        }
+      ]
+    }
+  ]
 }
