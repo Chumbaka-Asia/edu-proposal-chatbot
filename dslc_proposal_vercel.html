@@ -1,0 +1,2241 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DSLC Mentor Chatbot — Gemini Canvas</title>
+  <meta name="color-scheme" content="light" />
+
+  <!--
+    DSLC Mentor Chatbot (single-file HTML)
+
+    Goals:
+    - Guide students (13–17) through a linear Data Science Lifecycle:
+      Define → Collect → Clean → Train → Deploy
+    - Accept a CSV file, suggest cleaning approaches, apply student choices,
+      and let students download cleaned data.
+    - Recommend (but do not embed) the most relevant algorithm widget.
+    - Generate a professional one-page proposal (no emojis).
+
+    Notes:
+    - The Gemini API key is expected to be injected by the environment.
+    - This file stores session state in localStorage where possible.
+  -->
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    /* Tiny animation helpers (mirrors widget feel) */
+    .fade-in { animation: fadeIn 0.18s ease-out; }
+    .slide-in-from-top-2 { animation: slideIn 0.18s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes slideIn { from { transform: translateY(-0.5rem); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+    /* Slightly nicer scrollbars where supported */
+    .nice-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+    .nice-scroll::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.35); border-radius: 999px; border: 2px solid rgba(255,255,255,0.8); }
+    .nice-scroll::-webkit-scrollbar-track { background: rgba(241,245,249,0.9); }
+
+    /* Make the whole app feel like a widget */
+    html, body { height: 100%; }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 font-sans text-slate-900 p-4 md:p-8">
+
+  <div class="max-w-7xl mx-auto space-y-6">
+
+    <!-- Header -->
+    <header class="flex flex-col md:flex-row md:items-start justify-between gap-4 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+      <div class="min-w-0">
+        <div class="flex items-start gap-3">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-blue-600 flex items-center justify-center text-white font-extrabold tracking-tight">DS</div>
+          <div class="min-w-0">
+            <h1 class="text-2xl font-bold text-slate-800 truncate">DSLC Mentor Chatbot</h1>
+            <p class="text-slate-500 mt-1">A guided mentor for planning a data science proposal from your problem statement and your dataset.</p>
+          </div>
+        </div>
+
+        <div class="mt-4 flex flex-wrap items-center gap-2">
+          <button id="reset-session" class="flex items-center gap-2 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-rose-700 bg-rose-50 hover:bg-rose-100 rounded transition-colors">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            Clear session
+          </button>
+          <button id="export-proposal" class="flex items-center gap-2 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded transition-colors">
+            <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
+            Download proposal
+          </button>
+          <span id="save-status" class="text-xs text-slate-500 ml-1">Not saved yet</span>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-3 self-start md:self-center">
+        <span class="text-sm font-medium text-slate-600">Stage:</span>
+        <div class="relative">
+          <select id="stage-select" class="appearance-none bg-slate-100 border border-slate-300 text-slate-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-56 p-2.5 pr-8 cursor-pointer" aria-label="Stage selector" disabled></select>
+          <i data-lucide="chevron-down" class="absolute right-2 top-3 w-4 h-4 text-slate-500 pointer-events-none"></i>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- LEFT PANEL: Chat -->
+      <section class="lg:col-span-4 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden sticky top-6 max-h-[75vh]">
+        <div class="p-5 border-b border-slate-200">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="font-semibold text-lg text-slate-800">Mentor chat</h2>
+            <button id="copy-chat" class="text-xs font-bold uppercase tracking-wide text-slate-600 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded transition-colors">
+              Copy chat
+            </button>
+          </div>
+          <p class="text-xs text-slate-500 mt-1">Ask one question at a time. The mentor will keep the plan focused and practical.</p>
+        </div>
+
+        <div id="chat-scroll" class="nice-scroll flex-1 overflow-auto p-5 bg-slate-50">
+          <div id="messages" class="space-y-3"></div>
+          <div id="chat-loading" class="hidden mt-4 text-sm text-slate-500">Thinking<span id="dots">.</span></div>
+        </div>
+
+        <div class="p-4 border-t border-slate-200 bg-white">
+          <div class="flex gap-2">
+            <input id="chat-input" type="text" class="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Type your message…" aria-label="Chat input" />
+            <button id="chat-send" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold transition-colors" aria-label="Send message">
+              Send
+            </button>
+          </div>
+          <div class="mt-2 flex items-center justify-between">
+            <span class="text-[11px] text-slate-500">Shortcut: Ctrl/Cmd + K to focus</span>
+            <button id="mentor-nudge" class="text-[11px] font-semibold text-indigo-700 hover:text-indigo-800">Ask for next question</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- CENTRE PANEL: Stage workspace -->
+      <section class="lg:col-span-5 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h2 id="stage-title" class="font-semibold text-lg text-slate-800">Stage</h2>
+            <p id="stage-desc" class="text-sm text-slate-500 mt-1">Stage description</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="loop-back" class="hidden px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-sm font-semibold transition-colors">
+              Loop back
+            </button>
+            <button id="stage-next" class="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed" disabled>
+              Next stage
+            </button>
+          </div>
+        </div>
+
+        <div id="stage-alert" class="hidden mt-4 p-3 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm"></div>
+
+        <div class="mt-5 space-y-6" id="stage-content"></div>
+      </section>
+
+      <!-- RIGHT PANEL: Progress + Outputs -->
+      <aside class="lg:col-span-3 space-y-6">
+
+        <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide">Progress</h3>
+            <span id="progress-pill" class="text-xs font-bold text-indigo-700 bg-indigo-50 px-2 py-1 rounded">0 / 5</span>
+          </div>
+          <div class="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden" aria-hidden="true">
+            <div id="progress-bar" class="h-full bg-gradient-to-r from-indigo-600 to-blue-600" style="width: 0%"></div>
+          </div>
+
+          <div class="mt-4 space-y-2" id="stage-list"></div>
+          <p class="text-xs text-slate-500 mt-4">Linear flow is enforced. Use “Loop back” if you need to fix an earlier stage.</p>
+        </div>
+
+        <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide">Stage notes</h3>
+          <p class="text-xs text-slate-500 mt-1">This is your short summary for the proposal.</p>
+          <textarea id="stage-notes" class="mt-3 w-full min-h-[160px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Write a short summary for this stage…"></textarea>
+          <div class="mt-3 flex items-center justify-between">
+            <button id="copy-notes" class="text-xs font-bold uppercase tracking-wide text-slate-600 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded transition-colors">Copy</button>
+            <span id="notes-hint" class="text-xs text-slate-500">Saved automatically</span>
+          </div>
+        </div>
+
+        <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+          <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide">One-page proposal</h3>
+          <p class="text-xs text-slate-500 mt-1">Generated at the end. You can still download a draft at any time.</p>
+          <button id="regen-proposal" class="mt-3 w-full flex items-center justify-center gap-2 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-all active:scale-95 shadow-sm">
+            <i data-lucide="wand-2" class="w-4.5 h-4.5"></i>
+            Generate / refresh
+          </button>
+          <textarea id="proposal" class="mt-3 w-full min-h-[220px] bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-indigo-200" readonly></textarea>
+          <div class="mt-3 flex items-center gap-2">
+            <button id="copy-proposal" class="flex-1 text-xs font-bold uppercase tracking-wide text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-2 rounded transition-colors">Copy</button>
+            <button id="download-proposal" class="flex-1 text-xs font-bold uppercase tracking-wide text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-3 py-2 rounded transition-colors">Download</button>
+          </div>
+        </div>
+
+      </aside>
+
+    </div>
+  </div>
+
+  <!-- Modal: Confirm -->
+  <div id="modal" class="hidden fixed inset-0 bg-black/50 z-50 items-center justify-center p-4">
+    <div class="bg-white rounded-xl shadow-lg w-full max-w-lg border border-slate-200">
+      <div class="p-5 border-b border-slate-200 flex items-start justify-between gap-3">
+        <div>
+          <h3 id="modal-title" class="text-lg font-bold text-slate-800">Confirm</h3>
+          <p id="modal-desc" class="text-sm text-slate-500 mt-1">Are you sure?</p>
+        </div>
+        <button id="modal-close" class="text-slate-400 hover:text-slate-600" aria-label="Close">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <div class="p-5">
+        <div class="flex justify-end gap-2">
+          <button id="modal-cancel" class="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-sm font-semibold">Cancel</button>
+          <button id="modal-ok" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">OK</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ----------------------------
+    // Constants + state
+    // ----------------------------
+
+    const STORAGE_KEY = 'dslcMentorSession.v1';
+    const MAX_CSV_BYTES_FOR_STORAGE = 4.5 * 1024 * 1024; // localStorage is limited; stay safely under typical 5MB.
+
+    const STAGES = [
+      { key: 'define',  name: 'Define',  desc: 'Confirm your problem statement and what “success” looks like.' },
+      { key: 'collect', name: 'Collect', desc: 'Upload your CSV and confirm what data you have.' },
+      { key: 'clean',   name: 'Clean',   desc: 'Choose cleaning steps and download a cleaned CSV.' },
+      { key: 'train',   name: 'Train',   desc: 'Choose a problem type and get a recommended widget to test your data.' },
+      { key: 'deploy',  name: 'Deploy',  desc: 'Describe how you will use the model and generate a one-page proposal.' }
+    ];
+
+    const DEFAULT_STATE = {
+      schemaVersion: 1,
+      currentStageIndex: 0,
+      completed: { define: false, collect: false, clean: false, train: false, deploy: false },
+      notes: { define: '', collect: '', clean: '', train: '', deploy: '' },
+      messages: [],
+      define: {
+        problemStatement: '',
+        successMeasure: ''
+      },
+      collect: {
+        csvFileName: '',
+        csvText: '',
+        parsed: null, // { fields: string[], rows: object[], stats: {...} }
+        csvTooLargeToPersist: false
+      },
+      clean: {
+        plan: {
+          missing: null,     // 'delete_rows' | 'fill'
+          outliers: null,    // 'remove' | 'keep'
+          labelColumn: '',
+          labelStandardise: null // 'lower_trim' | 'none'
+        },
+        cleaned: null, // { fields, rows, annotations, log }
+        downloaded: false
+      },
+      train: {
+        problemType: '', // 'regression' | 'classification' | 'clustering'
+        targetColumn: '',
+        recommended: [], // [{ name, path, whenToUse }]
+        studentResult: ''
+      },
+      deploy: {
+        usageContext: '',
+        alertPlan: '',
+        riskPlan: '',
+        improvementPlan: ''
+      },
+      proposal: {
+        text: ''
+      },
+      lastSavedAt: null
+    };
+
+    let state = structuredClone(DEFAULT_STATE);
+
+    // ----------------------------
+    // DOM helpers
+    // ----------------------------
+
+    const $ = (id) => document.getElementById(id);
+
+    function escapeHtml(str) {
+      const s = String(str ?? '');
+      return s
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function clamp(n, min, max) {
+      return Math.max(min, Math.min(max, n));
+    }
+
+    function formatTimestamp(ts) {
+      if (!ts) return 'Not saved yet';
+      try {
+        return 'Saved ' + new Date(ts).toLocaleString();
+      } catch {
+        return 'Saved';
+      }
+    }
+
+    async function copyText(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('Copied to clipboard');
+      } catch {
+        // Fallback
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        toast('Copied to clipboard');
+      }
+    }
+
+    function downloadFile(content, filename, type = 'text/plain;charset=utf-8') {
+      const blob = new Blob([content], { type });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    // ----------------------------
+    // Toast (lightweight)
+    // ----------------------------
+
+    let toastTimer = null;
+    function toast(message) {
+      let el = $('_toast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = '_toast';
+        el.className = 'fixed left-1/2 bottom-6 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg border border-white/10 z-[60] hidden';
+        document.body.appendChild(el);
+      }
+      el.textContent = message;
+      el.classList.remove('hidden');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.add('hidden'), 2200);
+    }
+
+    // ----------------------------
+    // Modal confirm
+    // ----------------------------
+
+    function confirmModal({ title, desc, okText = 'OK', cancelText = 'Cancel' }) {
+      return new Promise((resolve) => {
+        $('modal-title').textContent = title;
+        $('modal-desc').textContent = desc;
+        $('modal-ok').textContent = okText;
+        $('modal-cancel').textContent = cancelText;
+
+        const modal = $('modal');
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+
+        const cleanup = () => {
+          modal.classList.add('hidden');
+          modal.classList.remove('flex');
+          $('modal-ok').onclick = null;
+          $('modal-cancel').onclick = null;
+          $('modal-close').onclick = null;
+        };
+
+        $('modal-ok').onclick = () => { cleanup(); resolve(true); };
+        $('modal-cancel').onclick = () => { cleanup(); resolve(false); };
+        $('modal-close').onclick = () => { cleanup(); resolve(false); };
+      });
+    }
+
+    // ----------------------------
+    // Persistence
+    // ----------------------------
+
+    function estimateBytes(str) {
+      // Rough, but good enough.
+      return new Blob([str]).size;
+    }
+
+    function buildPersistedPayload() {
+      // If CSV is large, do not persist raw CSV or row arrays.
+      const payload = structuredClone(state);
+
+      if (payload.collect?.parsed?.rows) {
+        // Keep parsed rows only if reasonably small.
+        const candidate = JSON.stringify(payload);
+        if (estimateBytes(candidate) > MAX_CSV_BYTES_FOR_STORAGE) {
+          payload.collect.csvTooLargeToPersist = true;
+          payload.collect.csvText = '';
+          payload.collect.parsed = {
+            fields: payload.collect.parsed.fields,
+            rows: [],
+            stats: payload.collect.parsed.stats
+          };
+
+          if (payload.clean?.cleaned?.rows) {
+            payload.clean.cleaned = {
+              fields: payload.clean.cleaned.fields,
+              rows: [],
+              annotations: null,
+              log: payload.clean.cleaned.log
+            };
+          }
+        } else {
+          payload.collect.csvTooLargeToPersist = false;
+        }
+      }
+
+      payload.lastSavedAt = Date.now();
+      return payload;
+    }
+
+    const persistDebounced = (() => {
+      let t = null;
+      return () => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+          try {
+            const payload = buildPersistedPayload();
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+            state.lastSavedAt = payload.lastSavedAt;
+            $('save-status').textContent = formatTimestamp(state.lastSavedAt);
+          } catch (err) {
+            console.warn('Failed to save session:', err);
+            $('save-status').textContent = 'Save failed (storage full?)';
+          }
+        }, 250);
+      };
+    })();
+
+    function loadSession() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return false;
+        const parsed = JSON.parse(raw);
+        if (!parsed || parsed.schemaVersion !== 1) return false;
+        state = Object.assign(structuredClone(DEFAULT_STATE), parsed);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function clearSession() {
+      localStorage.removeItem(STORAGE_KEY);
+      state = structuredClone(DEFAULT_STATE);
+      toast('Session cleared');
+      renderAll();
+    }
+
+    // ----------------------------
+    // Gemini API
+    // ----------------------------
+
+    function summariseCsvForPrompt(parsed, { maxFields = 18, maxNumeric = 12 } = {}) {
+      if (!parsed?.fields?.length || !parsed?.stats) return '';
+
+      const fields = parsed.fields;
+      const stats = parsed.stats;
+      const cols = stats?.overall?.cols;
+      const rows = stats?.overall?.rows;
+      const missingPct = stats?.overall?.missingPct;
+      const numericFields = stats?.overall?.numericFields || [];
+
+      const headFields = fields.slice(0, maxFields);
+      const moreFields = fields.length > headFields.length ? ` (+${fields.length - headFields.length} more)` : '';
+      const headNumeric = numericFields.slice(0, maxNumeric);
+      const moreNumeric = numericFields.length > headNumeric.length ? ` (+${numericFields.length - headNumeric.length} more)` : '';
+
+      const colSummaries = headFields.map(f => {
+        const c = stats.columns?.[f];
+        if (!c) return `- ${f}: (no stats)`;
+        const t = c.isNumeric ? 'numeric' : 'text/categorical';
+        const miss = Number.isFinite(c.missingPct) ? `${c.missingPct.toFixed(1)}% missing` : `${c.missing || 0} missing`;
+        const uniq = Number.isFinite(c.uniqueCountApprox) ? `${c.uniqueCountApprox} unique (approx)` : '';
+        const sample = (c.sampleValues || []).slice(0, 3).join(', ');
+        const samplePart = sample ? `sample: ${sample}` : '';
+        return `- ${f}: ${t}, ${miss}${uniq ? `, ${uniq}` : ''}${samplePart ? `, ${samplePart}` : ''}`;
+      }).join('\n');
+
+      const lines = [
+        '<dataset_snapshot>',
+        `- Size: ${Number.isFinite(rows) ? rows : '?'} rows × ${Number.isFinite(cols) ? cols : '?'} columns`,
+        Number.isFinite(missingPct) ? `- Missing cells overall: ${missingPct.toFixed(1)}%` : null,
+        `- Columns: ${headFields.join(', ')}${moreFields}`,
+        numericFields.length ? `- Numeric-ish columns: ${headNumeric.join(', ')}${moreNumeric}` : '- Numeric-ish columns: (none detected)',
+        '',
+        'Column notes:',
+        colSummaries,
+        '</dataset_snapshot>'
+      ].filter(x => x !== null);
+
+      return lines.join('\n');
+    }
+
+    function summariseCleaningForPrompt(cleaned) {
+      if (!cleaned) return '<cleaning_status>(not cleaned yet)</cleaning_status>';
+      const log = (cleaned.log || []).slice(0, 12).map(x => `- ${x}`).join('\n');
+      return ['<cleaning_status>', log || '- (no cleaning log)', '</cleaning_status>'].join('\n');
+    }
+
+    function buildProposalSynthesisSystemPrompt() {
+      const parsed = state.collect?.parsed;
+      const datasetContext = parsed ? summariseCsvForPrompt(parsed) : '<dataset_snapshot>(no CSV uploaded yet)</dataset_snapshot>';
+      const cleaningContext = summariseCleaningForPrompt(state.clean?.cleaned);
+      const widget = (state.train?.recommended || [])[0]?.name || '';
+
+      return [
+        '<role>',
+        'You are a mentor for 13–17 year old students building Arduino/ESP32 sensor projects to solve real community problems.',
+        'Your tone is encouraging but rigorous, professional yet accessible.',
+        '</role>',
+        '',
+        '<task>',
+        'Produce ONE clear, accurate, easy-to-scan one-page project proposal (plain text, no emojis).',
+        'The proposal must be consistent with what the student actually entered and what the uploaded dataset shows.',
+        '</task>',
+        '',
+        '<critical_thinking_rules>',
+        '- Do NOT agree with incorrect assumptions. If something is wrong, say so plainly and correct it.',
+        '- If something is missing, state what is missing and give a short, practical fix.',
+        '- Do not invent sensors, columns, results, or testing numbers that are not present.',
+        '</critical_thinking_rules>',
+        '',
+        '<format_rules>',
+        '- Use short labelled sections and bullet points where helpful.',
+        '- Start with an "At a glance" block (3–6 bullets).',
+        '- Include a compact "Data checklist" that shows: label/target, key features, sampling/time window, where/when, how labels are made.',
+        '- Include a compact "Model plan" (problem type, target, first widget to test, what metric you will record).',
+        '- Include a compact "Deployment + safety" (what the device does, what happens after prediction, risks and mitigations).',
+        '</format_rules>',
+        '',
+        '<student_inputs>',
+        `- Problem statement (Define): ${(state.define?.problemStatement || '').trim() || '(not provided)'}`,
+        `- Success measure (Define): ${(state.define?.successMeasure || '').trim() || '(not provided)'}`,
+        `- Dataset file name: ${(state.collect?.csvFileName || '').trim() || '(not provided)'}`,
+        datasetContext,
+        '',
+        cleaningContext,
+        '',
+        'Training choices:',
+        `- Problem type: ${(state.train?.problemType || '').trim() || '(not selected)'}`,
+        `- Target column: ${(state.train?.targetColumn || '').trim() || '(not specified)'}`,
+        `- Recommended first widget: ${widget || '(not selected)'}`,
+        `- Recorded student result: ${(state.train?.studentResult || '').trim() || '(not recorded)'}`,
+        '',
+        'Deployment inputs:',
+        `- Usage context: ${(state.deploy?.usageContext || '').trim() || '(not provided)'}`,
+        `- Alerts and action: ${(state.deploy?.alertPlan || '').trim() || '(not provided)'}`,
+        `- Risk and safety plan: ${(state.deploy?.riskPlan || '').trim() || '(not provided)'}`,
+        `- Improvement plan: ${(state.deploy?.improvementPlan || '').trim() || '(not provided)'}`,
+        '</student_inputs>'
+      ].join('\n');
+    }
+
+    async function callGeminiWithSystemPrompt({ systemPrompt, userText }) {
+      const apiKey = ""; // Injected by the environment
+
+      const model = 'gemini-2.5-flash-preview-09-2025';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+      const body = {
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents: [
+          { role: 'user', parts: [{ text: userText }] }
+        ]
+      };
+
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      if (!resp.ok) {
+        const txt = await resp.text();
+        throw new Error('API error: ' + resp.status + ' ' + txt);
+      }
+
+      const data = await resp.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error('No response text');
+      return String(text).trim();
+    }
+
+    function buildSystemPrompt() {
+      const stage = STAGES[state.currentStageIndex];
+      const stageKey = stage.key;
+
+      const parsed = state.collect?.parsed;
+      const datasetContext = parsed ? summariseCsvForPrompt(parsed) : '';
+      const cleaningContext = summariseCleaningForPrompt(state.clean?.cleaned);
+      const haveDataset = Boolean(parsed);
+
+      const shared = [
+        '<role>',
+        'You are a mentor for 13–17 year old students building Arduino/ESP32 sensor projects to solve real community problems.',
+        'Your tone is encouraging but rigorous, professional yet accessible.',
+        '</role>',
+        '',
+        '<task>',
+        'Guide the student to create a practical one-page proposal by walking through the Data Science Lifecycle stages:',
+        'Define → Collect → Clean → Train → Deploy.',
+        '</task>',
+        '',
+        '<core_behavior>',
+        '- Be encouraging and direct, but do not flatter or blindly agree.',
+        '- If the student is wrong, making a wrong assumption, or goes out of scope, clearly say so and correct them.',
+        '- If you do not have enough information, ask ONE focused question (not a list).',
+        '- Keep it short: 2–5 sentences. No emojis.',
+        '</core_behavior>',
+        '',
+        '<scope>',
+        '- Arduino/ESP32 + sensor data, collected into a dataset (often CSV).',
+        '- A measurable outcome (label/target) that can be predicted or classified.',
+        '- Practical constraints: limited sensors, realistic labelling, and simple testing.',
+        '</scope>',
+        '',
+        '<handling_unrealistic_suggestions>',
+        '- Example: “We will predict disease with no labels” → explain why labels are needed and ask how they will label.',
+        '- Example: “We can detect everything with one sensor value” → explain limits and ask what extra signals they can collect.',
+        '- Example: “We will solve the whole community problem in one week” → narrow to a testable, sensor-measurable piece.',
+        '</handling_unrealistic_suggestions>',
+        '',
+        '<important_rules>',
+        '- The student is working linearly and should complete the current stage before moving on.',
+        '- If they ask to jump ahead, politely ask them to finish the current stage first.',
+        '</important_rules>',
+        '',
+        '<problem_statement_format>',
+        'Use this EXACT structure once the root cause is clear:',
+        '"[User Name], a [User Characteristic], faces the problem of [what] at [where] during [when] through [how] because [root cause]."',
+        '</problem_statement_format>',
+        '',
+        `<current_stage>${stage.name} (${stageKey})</current_stage>`,
+      ];
+
+      const summaries = STAGES.map(s => {
+        const note = (state.notes?.[s.key] || '').trim();
+        if (!note) return null;
+        return `${s.name} summary: ${note}`;
+      }).filter(Boolean);
+
+      const stageSpecific = {
+        define: [
+          '<stage_instructions>',
+          'For Define (5-Whys root cause discovery):',
+          '- Guide the student using the 5-Whys method as a LINEAR chain (each answer leads to the next “Why?”).',
+          '- Keep responses SHORT (2–4 sentences) and ask ONE focused question at a time.',
+          '- Do the 5-Whys analysis internally; do not lecture about it.',
+          '- If the student gives a vague, unmeasurable, or incorrect cause, say so and steer them to a measurable cause that could be addressed with sensor data.',
+          '',
+          'Define outputs to reach:',
+          '1) A complete problem statement in this exact structure:',
+          '"[User Name], a [User Characteristic], faces the problem of [what] at [where] during [when] through [how] because [root cause]."',
+          '2) A success measure that is measurable and testable (a number, threshold, or clear outcome).',
+          '',
+          'When you believe the root cause is reached, provide proof before the final statement using plain text (NO markdown):',
+          'Great work! Let\'s review our 5-Whys journey:',
+          '1. [Initial problem/symptom]',
+          'Why?',
+          '2. [Cause 1]',
+          'Why?',
+          '3. [Cause 2]',
+          'Why?',
+          'ROOT CAUSE: [Final root cause]',
+          '',
+          'Then: explain in 1 sentence why the root cause is sensor-measurable, and then write the final problem statement in the required structure.',
+          '</stage_instructions>'
+        ],
+        collect: [
+          '<stage_instructions>',
+          'For Collect:',
+          '- First, check the student\'s problem statement. If it is missing any slot (what/where/when/how/root cause), say so and ask for the missing slot.',
+          '- Make sure their planned data answers the problem statement: features must measure the situation, and labels/targets must reflect what success means.',
+          '- Ensure they are collecting ALL required data fields: sensor readings (features), label/target, timestamp or time window, and any key context (where/which device/user).',
+          '- If they only have sensor values but no label/target, explain why that is a problem and ask how they will label each row.',
+          '- If they upload a dataset, use the dataset snapshot below to point out what is missing or mismatched.',
+          haveDataset ? datasetContext : '<dataset_snapshot>(no CSV uploaded yet)</dataset_snapshot>',
+          '',
+          'Ask ONE focused question that moves them toward a complete, label-ready dataset.',
+          '</stage_instructions>'
+        ],
+        clean: [
+          '<stage_instructions>',
+          'For Clean (recommendations must be dataset-aware):',
+          '- Use the dataset snapshot below to recommend specific cleaning steps (do not give generic advice).',
+          '- If the dataset has high missingness in important columns, say so and recommend a realistic fix (collect more, remove rows, or fill numeric-only).',
+          '- If labels look inconsistent (different spellings/cases), recommend standardising labels and state why.',
+          '- If outliers are likely (numeric fields), warn about sensor glitches and suggest keeping/removing with a short justification.',
+          '- Do NOT approve cleaning that would destroy the label/target or break alignment with the problem statement.',
+          '',
+          haveDataset ? datasetContext : '<dataset_snapshot>(no CSV uploaded yet)</dataset_snapshot>',
+          '',
+          cleaningContext,
+          '',
+          'Ask ONE focused question: what cleaning choice should they make next, based on the dataset evidence above?',
+          '</stage_instructions>'
+        ],
+        train: [
+          '<stage_instructions>',
+          'For Train:',
+          '- Help the student choose the problem type (predict a number / classify categories / find groups).',
+          '- Recommend one widget to try first, and ask them to report the result (accuracy/MSE/purity).',
+          '</stage_instructions>'
+        ],
+        deploy: [
+          '<stage_instructions>',
+          'For Deploy:',
+          '- Help the student explain where the model will run, what it will do, and how they will test it safely.',
+          '- Ask for a realistic plan to improve the model after testing.',
+          '- If their deployment plan is unsafe, unrealistic, or contradicts the dataset/problem statement, correct it and ask for a safer alternative.',
+          '</stage_instructions>'
+        ]
+      };
+
+      return shared.concat('', 'Known context (from the student):', summaries.length ? summaries : ['(no summaries yet)'], '', stageSpecific[stageKey] || []).join('\n');
+    }
+
+    async function callGemini(conversation) {
+      const apiKey = ""; // Injected by the environment
+
+      const contents = conversation.map(msg => ({
+        role: msg.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: msg.content }]
+      }));
+
+      const body = {
+        systemInstruction: { parts: [{ text: buildSystemPrompt() }] },
+        contents
+      };
+
+      const model = 'gemini-2.5-flash-preview-09-2025';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      if (!resp.ok) {
+        const txt = await resp.text();
+        throw new Error('API error: ' + resp.status + ' ' + txt);
+      }
+
+      const data = await resp.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error('No response text');
+      return text;
+    }
+
+    // ----------------------------
+    // Chat UI
+    // ----------------------------
+
+    function normaliseChatText(s) {
+      // Keep plain text, avoid markdown formatting expectations.
+      return String(s ?? '').trim();
+    }
+
+    function pushMessage(role, content) {
+      state.messages.push({ role, content: normaliseChatText(content), ts: Date.now(), stageKey: STAGES[state.currentStageIndex].key });
+      persistDebounced();
+      renderMessages();
+    }
+
+
+    function renderMessages() {
+      const root = $('messages');
+      root.innerHTML = '';
+      const msgs = state.messages;
+
+      for (const m of msgs) {
+        const isUser = m.role === 'user';
+        const wrap = document.createElement('div');
+        wrap.className = 'max-w-[92%] ' + (isUser ? 'ml-auto' : 'mr-auto');
+
+        const bubble = document.createElement('div');
+        bubble.className =
+          'rounded-2xl px-4 py-3 shadow-sm border text-sm leading-relaxed whitespace-pre-wrap ' +
+          (isUser
+            ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white border-white/10 rounded-br-md'
+            : 'bg-white text-slate-900 border-slate-200 rounded-bl-md');
+        bubble.textContent = m.content;
+
+        const meta = document.createElement('div');
+        meta.className = 'mt-1 text-[11px] text-slate-500 ' + (isUser ? 'text-right' : 'text-left');
+        const stageName = STAGES.find(s => s.key === m.stageKey)?.name || 'Stage';
+        meta.textContent = stageName;
+
+        wrap.appendChild(bubble);
+        wrap.appendChild(meta);
+        root.appendChild(wrap);
+      }
+
+      // Scroll to bottom
+      const sc = $('chat-scroll');
+      sc.scrollTop = sc.scrollHeight;
+    }
+
+    let dotsTimer = null;
+    function setChatLoading(on) {
+      const el = $('chat-loading');
+      const dots = $('dots');
+      if (!on) {
+        el.classList.add('hidden');
+        clearInterval(dotsTimer);
+        dots.textContent = '.';
+        return;
+      }
+
+      el.classList.remove('hidden');
+      let i = 0;
+      clearInterval(dotsTimer);
+      dotsTimer = setInterval(() => {
+        dots.textContent = '.'.repeat((i % 3) + 1);
+        i++;
+      }, 360);
+    }
+
+    async function sendChat(text) {
+      const trimmed = String(text || '').trim();
+      if (!trimmed) return;
+
+      pushMessage('user', trimmed);
+      $('chat-input').value = '';
+      setChatLoading(true);
+
+      try {
+        let assistantText = '';
+        try {
+          assistantText = await callGemini(state.messages);
+        } catch (err) {
+          console.warn('Gemini call failed:', err);
+          assistantText = 'I cannot reach the API right now. Tell me one detail: what is the next decision you want to make in this stage?';
+        }
+        pushMessage('assistant', assistantText);
+      } finally {
+        setChatLoading(false);
+      }
+    }
+
+    // ----------------------------
+    // CSV parsing + analysis
+    // ----------------------------
+
+    function safeNumber(x) {
+      const n = Number(x);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function isMissing(v) {
+      if (v === null || v === undefined) return true;
+      const s = String(v).trim();
+      return s === '' || s.toLowerCase() === 'na' || s.toLowerCase() === 'null' || s.toLowerCase() === 'nan';
+    }
+
+    function computeColumnStats(fields, rows) {
+      const col = {};
+      for (const f of fields) {
+        col[f] = {
+          missing: 0,
+          numericCount: 0,
+          total: 0,
+          mean: null,
+          std: null,
+          uniques: new Set(),
+          sampleValues: []
+        };
+      }
+
+      for (const r of rows) {
+        for (const f of fields) {
+          const v = r[f];
+          col[f].total++;
+          if (isMissing(v)) {
+            col[f].missing++;
+            continue;
+          }
+
+          const num = safeNumber(v);
+          if (num !== null) {
+            col[f].numericCount++;
+          }
+
+          const s = String(v).trim();
+          if (col[f].sampleValues.length < 5) col[f].sampleValues.push(s);
+          if (col[f].uniques.size < 80) col[f].uniques.add(s);
+        }
+      }
+
+      // mean/std for numeric-ish columns
+      for (const f of fields) {
+        const values = [];
+        for (const r of rows) {
+          const v = r[f];
+          if (isMissing(v)) continue;
+          const num = safeNumber(v);
+          if (num === null) continue;
+          values.push(num);
+        }
+
+        if (values.length >= 2) {
+          const mean = values.reduce((a, b) => a + b, 0) / values.length;
+          const variance = values.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / values.length;
+          col[f].mean = mean;
+          col[f].std = Math.sqrt(variance);
+        }
+      }
+
+      const overallMissing = rows.reduce((acc, r) => {
+        let m = 0;
+        for (const f of fields) if (isMissing(r[f])) m++;
+        return acc + m;
+      }, 0);
+
+      const numericFields = fields.filter(f => {
+        const c = col[f];
+        const nonMissing = Math.max(1, c.total - c.missing);
+        return (c.numericCount / nonMissing) >= 0.9;
+      });
+
+      return {
+        columns: Object.fromEntries(fields.map(f => {
+          const c = col[f];
+          const nonMissing = Math.max(1, c.total - c.missing);
+          return [f, {
+            missing: c.missing,
+            missingPct: (c.missing / Math.max(1, c.total)) * 100,
+            isNumeric: (c.numericCount / nonMissing) >= 0.9,
+            uniqueCountApprox: c.uniques.size,
+            sampleValues: c.sampleValues,
+            mean: c.mean,
+            std: c.std
+          }];
+        })),
+        overall: {
+          rows: rows.length,
+          cols: fields.length,
+          missingCells: overallMissing,
+          missingPct: (overallMissing / Math.max(1, rows.length * fields.length)) * 100,
+          numericFields
+        }
+      };
+    }
+
+    function parseCsvText(csvText) {
+      const res = Papa.parse(csvText, {
+        header: true,
+        skipEmptyLines: 'greedy',
+        dynamicTyping: false,
+        transformHeader: h => String(h || '').trim()
+      });
+
+      if (res.errors?.length) {
+        const first = res.errors[0];
+        throw new Error(first.message || 'CSV parse error');
+      }
+
+      const rows = (res.data || []).filter(r => r && Object.keys(r).length > 0);
+      const fields = (res.meta?.fields || []).map(f => String(f).trim()).filter(Boolean);
+      if (!fields.length) throw new Error('No header row found. Your CSV needs a header row.');
+      if (!rows.length) throw new Error('No data rows found.');
+
+      // Normalise: ensure every field exists on each row
+      for (const r of rows) {
+        for (const f of fields) {
+          if (!(f in r)) r[f] = '';
+        }
+      }
+
+      const stats = computeColumnStats(fields, rows);
+
+      return { fields, rows, stats };
+    }
+
+    // ----------------------------
+    // Cleaning
+    // ----------------------------
+
+    function detectIssues(parsed) {
+      const { fields, rows, stats } = parsed;
+
+      const missingByCol = {};
+      for (const f of fields) missingByCol[f] = stats.columns[f]?.missing || 0;
+
+      // Outliers: numeric columns only
+      const outlierCountsByCol = {};
+      const outlierRowFlags = new Array(rows.length).fill(false);
+
+      for (const f of stats.overall.numericFields) {
+        const mean = stats.columns[f].mean;
+        const std = stats.columns[f].std;
+        if (!Number.isFinite(mean) || !Number.isFinite(std) || std === 0) {
+          outlierCountsByCol[f] = 0;
+          continue;
+        }
+        let cnt = 0;
+        for (let i = 0; i < rows.length; i++) {
+          const v = rows[i][f];
+          if (isMissing(v)) continue;
+          const num = safeNumber(v);
+          if (num === null) continue;
+          const z = Math.abs((num - mean) / std);
+          if (z > 3) {
+            cnt++;
+            outlierRowFlags[i] = true;
+          }
+        }
+        outlierCountsByCol[f] = cnt;
+      }
+
+      return { missingByCol, outlierCountsByCol, outlierRowFlags };
+    }
+
+    function applyCleaning(parsed, plan) {
+      const { fields, rows, stats } = parsed;
+      const issues = detectIssues(parsed);
+
+      const log = [];
+      const annotations = {}; // { rowIndex: { field: 'filled'|'label'|'outlier' } }
+
+      const numericFields = stats.overall.numericFields;
+      const means = {};
+      for (const f of numericFields) {
+        means[f] = stats.columns[f].mean;
+      }
+
+      // Work on a copy
+      let outRows = rows.map(r => ({ ...r }));
+
+      // Missing
+      if (plan.missing === 'delete_rows') {
+        const before = outRows.length;
+        outRows = outRows.filter(r => fields.every(f => !isMissing(r[f])));
+        const removed = before - outRows.length;
+        log.push(`Missing values: removed ${removed} row(s) with at least one missing cell.`);
+      } else if (plan.missing === 'fill') {
+        for (let i = 0; i < outRows.length; i++) {
+          for (const f of fields) {
+            if (!isMissing(outRows[i][f])) continue;
+
+            if (!annotations[i]) annotations[i] = {};
+
+            if (numericFields.includes(f) && Number.isFinite(means[f])) {
+              outRows[i][f] = String(means[f]);
+              annotations[i][f] = 'filled';
+            } else {
+              outRows[i][f] = 'unknown';
+              annotations[i][f] = 'filled';
+            }
+          }
+        }
+        log.push('Missing values: filled missing numeric cells with column mean and non-numeric cells with "unknown".');
+      }
+
+      // Outliers
+      if (plan.outliers === 'remove') {
+        const before = outRows.length;
+        // We must recompute outliers on the original rows index mapping.
+        // For simplicity: compute again on current outRows using updated stats.
+        const reParsed = { fields, rows: outRows, stats: computeColumnStats(fields, outRows) };
+        const reIssues = detectIssues(reParsed);
+        outRows = outRows.filter((_, idx) => !reIssues.outlierRowFlags[idx]);
+        const removed = before - outRows.length;
+        log.push(`Outliers: removed ${removed} row(s) that contained at least one outlier (more than 3 standard deviations).`);
+      } else if (plan.outliers === 'keep') {
+        // Mark outlier cells in preview
+        const reParsed = { fields, rows: outRows, stats: computeColumnStats(fields, outRows) };
+        const reStats = reParsed.stats;
+        for (const f of reStats.overall.numericFields) {
+          const mean = reStats.columns[f].mean;
+          const std = reStats.columns[f].std;
+          if (!Number.isFinite(mean) || !Number.isFinite(std) || std === 0) continue;
+          for (let i = 0; i < outRows.length; i++) {
+            const v = outRows[i][f];
+            if (isMissing(v)) continue;
+            const num = safeNumber(v);
+            if (num === null) continue;
+            const z = Math.abs((num - mean) / std);
+            if (z > 3) {
+              if (!annotations[i]) annotations[i] = {};
+              if (!annotations[i][f]) annotations[i][f] = 'outlier';
+            }
+          }
+        }
+        log.push('Outliers: kept all rows. Outlier values are highlighted in the preview for your review.');
+      }
+
+      // Labels
+      if (plan.labelColumn && plan.labelStandardise === 'lower_trim') {
+        const col = plan.labelColumn;
+        const beforeExamples = new Set();
+        const afterExamples = new Set();
+
+        for (let i = 0; i < outRows.length; i++) {
+          const v = outRows[i][col];
+          if (isMissing(v)) continue;
+          const s0 = String(v);
+          const s1 = String(v).trim().toLowerCase();
+          if (s0 !== s1) {
+            if (!annotations[i]) annotations[i] = {};
+            annotations[i][col] = 'label';
+            outRows[i][col] = s1;
+            if (beforeExamples.size < 5) beforeExamples.add(s0);
+            if (afterExamples.size < 5) afterExamples.add(s1);
+          }
+        }
+
+        const b = Array.from(beforeExamples).join(', ');
+        const a = Array.from(afterExamples).join(', ');
+        log.push(`Labels: standardised "${col}" by trimming and lowercasing. Examples: [${b}] → [${a}]`);
+      }
+
+      return {
+        fields,
+        rows: outRows,
+        annotations,
+        log
+      };
+    }
+
+    function buildCsvPreviewTable(fields, rows, annotations, maxRows = 15) {
+      const head = fields.slice(0, 10);
+      const showNote = fields.length > head.length;
+
+      const bodyRows = rows.slice(0, maxRows);
+
+      const thead = `
+        <thead>
+          <tr>
+            ${head.map(h => `<th class="sticky top-0 bg-slate-100 border-b border-slate-200 text-left text-xs font-bold text-slate-600 px-2 py-2">${escapeHtml(h)}</th>`).join('')}
+          </tr>
+        </thead>
+      `;
+
+      const tbody = `
+        <tbody>
+          ${bodyRows.map((r, idx) => {
+            const rowIdx = idx; // preview-index; annotations are based on original indices, but good enough for preview UX.
+            const annRow = annotations?.[rowIdx] || {};
+            return `
+              <tr class="border-b border-slate-100">
+                ${head.map(f => {
+                  const ann = annRow?.[f];
+                  const v = r[f];
+                  const base = 'px-2 py-2 text-xs text-slate-700 align-top whitespace-nowrap';
+                  const cls = ann === 'filled'
+                    ? 'bg-amber-50'
+                    : ann === 'label'
+                      ? 'bg-emerald-50'
+                      : ann === 'outlier'
+                        ? 'bg-rose-50'
+                        : '';
+                  return `<td class="${base} ${cls}">${escapeHtml(v)}</td>`;
+                }).join('')}
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      `;
+
+      const note = showNote
+        ? `<div class="mt-2 text-xs text-slate-500">Showing first ${head.length} columns. Your file has ${fields.length} columns.</div>`
+        : '';
+
+      return `
+        <div class="border border-slate-200 rounded-lg overflow-hidden bg-white">
+          <div class="max-h-[320px] overflow-auto nice-scroll">
+            <table class="w-full border-collapse">
+              ${thead}
+              ${tbody}
+            </table>
+          </div>
+        </div>
+        ${note}
+      `;
+    }
+
+    // ----------------------------
+    // Stage rendering
+    // ----------------------------
+
+    function renderStageSelect() {
+      const sel = $('stage-select');
+      sel.innerHTML = '';
+      STAGES.forEach((s, idx) => {
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        opt.textContent = `${idx + 1}. ${s.name}`;
+        sel.appendChild(opt);
+      });
+      sel.value = String(state.currentStageIndex);
+    }
+
+    function stageIsUnlocked(idx) {
+      // Linear: you can only be on current stage or earlier stages.
+      return idx <= state.currentStageIndex;
+    }
+
+    function canAdvance() {
+      const key = STAGES[state.currentStageIndex].key;
+      if (key === 'define') {
+        return (state.define.problemStatement || '').trim().length > 0 && (state.define.successMeasure || '').trim().length > 0;
+      }
+      if (key === 'collect') {
+        return !!state.collect.parsed && (state.collect.csvFileName || '').trim().length > 0;
+      }
+      if (key === 'clean') {
+        return !!state.clean.cleaned && state.clean.downloaded === true;
+      }
+      if (key === 'train') {
+        return (state.train.problemType || '').trim().length > 0;
+      }
+      if (key === 'deploy') {
+        return (state.proposal.text || '').trim().length > 0;
+      }
+      return false;
+    }
+
+    function markCompletedIfReady() {
+      const key = STAGES[state.currentStageIndex].key;
+      state.completed[key] = canAdvance();
+    }
+
+    function setStage(idx) {
+      const next = clamp(idx, 0, STAGES.length - 1);
+      // Linear: cannot jump forward.
+      if (next > state.currentStageIndex) return;
+
+      state.currentStageIndex = next;
+      persistDebounced();
+      renderAll();
+
+      // Nudge mentor context by keeping chat as-is; stage key is attached on each message.
+    }
+
+    function renderProgress() {
+      const list = $('stage-list');
+      list.innerHTML = '';
+
+      const completedCount = STAGES.reduce((acc, s) => acc + (state.completed[s.key] ? 1 : 0), 0);
+      $('progress-pill').textContent = `${completedCount} / ${STAGES.length}`;
+      $('progress-bar').style.width = `${Math.round((completedCount / STAGES.length) * 100)}%`;
+
+      STAGES.forEach((s, idx) => {
+        const isCurrent = idx === state.currentStageIndex;
+        const isDone = !!state.completed[s.key];
+        const unlocked = stageIsUnlocked(idx);
+
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'w-full text-left flex items-start gap-3 px-3 py-2 rounded-lg border ' +
+          (isCurrent ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white hover:bg-slate-50') +
+          ' transition-colors';
+        row.disabled = !unlocked;
+        row.setAttribute('aria-current', isCurrent ? 'step' : 'false');
+
+        const badge = document.createElement('div');
+        badge.className = 'w-8 h-8 rounded-full flex items-center justify-center text-xs font-extrabold ' +
+          (isDone ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-600 border border-slate-200');
+        badge.textContent = String(idx + 1);
+
+        const col = document.createElement('div');
+        col.className = 'min-w-0 flex-1';
+        col.innerHTML = `
+          <div class="flex items-center justify-between gap-2">
+            <div class="font-bold text-sm text-slate-800 truncate">${escapeHtml(s.name)}</div>
+            <div class="text-[11px] font-extrabold text-slate-500">${isDone ? 'Done' : (unlocked ? (isCurrent ? 'Now' : 'Open') : 'Locked')}</div>
+          </div>
+          <div class="text-xs text-slate-500 mt-0.5">${escapeHtml(s.desc)}</div>
+        `;
+
+        row.onclick = () => setStage(idx);
+
+        row.appendChild(badge);
+        row.appendChild(col);
+        list.appendChild(row);
+      });
+
+      $('save-status').textContent = formatTimestamp(state.lastSavedAt);
+    }
+
+    function renderStageHeader() {
+      const s = STAGES[state.currentStageIndex];
+      $('stage-title').textContent = `${state.currentStageIndex + 1}. ${s.name}`;
+      $('stage-desc').textContent = s.desc;
+
+      // Notes panel
+      $('stage-notes').value = state.notes[s.key] || '';
+
+      // Stage selector (disabled, but reflects state)
+      $('stage-select').value = String(state.currentStageIndex);
+
+      // Next button
+      $('stage-next').disabled = !canAdvance();
+
+      // Loop back button should be visible when any later stage is open (i.e. current stage > 0)
+      const showLoop = state.currentStageIndex > 0;
+      $('loop-back').classList.toggle('hidden', !showLoop);
+    }
+
+    function setStageAlert(text) {
+      const el = $('stage-alert');
+      if (!text) {
+        el.classList.add('hidden');
+        el.textContent = '';
+        return;
+      }
+      el.textContent = text;
+      el.classList.remove('hidden');
+    }
+
+    function renderDefineStage(container) {
+      const ps = escapeHtml(state.define.problemStatement);
+      const sm = escapeHtml(state.define.successMeasure);
+
+      container.innerHTML = `
+        <section class="space-y-3">
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Problem statement</h3>
+            <p class="text-sm text-slate-600 mt-1">Paste your problem statement from the 5-Whys activity, or write it here.</p>
+            <textarea id="define-problem" class="mt-3 w-full min-h-[110px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="[Person] needs a way to [do what] [when/where] because [root cause]">${ps}</textarea>
+            <div class="mt-2 text-xs text-slate-500">Tip: Keep it specific and measurable.</div>
+          </div>
+
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Success measure</h3>
+            <p class="text-sm text-slate-600 mt-1">Define a clear “we succeeded if…” check.</p>
+            <input id="define-success" class="mt-3 w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Example: Detect slips within 2 seconds with at least 85% accuracy" value="${sm}" />
+          </div>
+
+          <div class="flex items-center justify-between">
+            <button id="define-save" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">Save Define stage</button>
+            <span id="define-status" class="text-sm text-slate-600"></span>
+          </div>
+        </section>
+      `;
+
+      $('define-save').onclick = () => {
+        state.define.problemStatement = $('define-problem').value.trim();
+        state.define.successMeasure = $('define-success').value.trim();
+
+        if (!state.define.problemStatement || !state.define.successMeasure) {
+          $('define-status').textContent = 'Please fill in both fields.';
+          $('define-status').className = 'text-sm text-rose-700';
+          return;
+        }
+
+        $('define-status').textContent = 'Saved.';
+        $('define-status').className = 'text-sm text-emerald-700';
+
+        // Helpful default notes
+        if (!(state.notes.define || '').trim()) {
+          state.notes.define = `Problem: ${state.define.problemStatement}\nSuccess: ${state.define.successMeasure}`;
+        }
+
+        markCompletedIfReady();
+        persistDebounced();
+        renderAll();
+      };
+
+      // Live gating
+      $('define-problem').addEventListener('input', () => { state.define.problemStatement = $('define-problem').value; markCompletedIfReady(); persistDebounced(); renderStageHeader(); });
+      $('define-success').addEventListener('input', () => { state.define.successMeasure = $('define-success').value; markCompletedIfReady(); persistDebounced(); renderStageHeader(); });
+    }
+
+    function renderCollectStage(container) {
+      const parsed = state.collect.parsed;
+
+      const uploadCard = `
+        <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <h3 class="font-bold text-slate-800">Upload your CSV</h3>
+              <p class="text-sm text-slate-600 mt-1">File limit: 5MB. The file stays in your browser.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <input id="csv-file" type="file" accept=".csv" class="hidden" />
+              <button id="csv-upload" class="flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">
+                <i data-lucide="upload" class="w-4 h-4"></i>
+                Choose file
+              </button>
+            </div>
+          </div>
+
+          <div id="csv-meta" class="mt-3 text-sm text-slate-700"></div>
+          <div id="csv-warning" class="mt-3 hidden text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3"></div>
+        </div>
+      `;
+
+      const detailsCard = parsed ? `
+        <div class="bg-white border border-slate-200 rounded-lg p-4">
+          <h3 class="font-bold text-slate-800">Quick preview</h3>
+          <p class="text-sm text-slate-600 mt-1">Check that the columns match your problem statement.</p>
+
+          <div class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
+              <div class="text-xs font-bold text-slate-500 uppercase">Rows</div>
+              <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${parsed.stats.overall.rows}</div>
+            </div>
+            <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
+              <div class="text-xs font-bold text-slate-500 uppercase">Columns</div>
+              <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${parsed.stats.overall.cols}</div>
+            </div>
+            <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
+              <div class="text-xs font-bold text-slate-500 uppercase">Missing cells</div>
+              <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${parsed.stats.overall.missingPct.toFixed(1)}%</div>
+            </div>
+          </div>
+
+          <div class="mt-4">
+            ${buildCsvPreviewTable(parsed.fields, parsed.rows, null, 12)}
+          </div>
+
+          <div class="mt-4 flex items-center justify-between">
+            <button id="collect-save" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">Confirm dataset</button>
+            <span id="collect-status" class="text-sm text-slate-600"></span>
+          </div>
+
+          <div class="mt-3 text-xs text-slate-500">
+            Tip: If your file has missing values or inconsistent labels, that is fine. You will fix it in the Clean stage.
+          </div>
+        </div>
+      ` : `
+        <div class="bg-white border border-slate-200 rounded-lg p-4">
+          <h3 class="font-bold text-slate-800">What this stage needs</h3>
+          <p class="text-sm text-slate-600 mt-1">Upload a CSV that matches your project.</p>
+          <ul class="mt-3 text-sm text-slate-700 list-disc list-inside space-y-1">
+            <li>A header row (column names)</li>
+            <li>Each row should represent one observation (one moment or one example)</li>
+          </ul>
+        </div>
+      `;
+
+      container.innerHTML = `<div class="space-y-4">${uploadCard}${detailsCard}</div>`;
+
+      const fileInput = $('csv-file');
+      $('csv-upload').onclick = () => fileInput.click();
+
+      fileInput.onchange = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        // Reset
+        setStageAlert('');
+        $('csv-warning').classList.add('hidden');
+        $('csv-warning').textContent = '';
+
+        if (file.size > 5 * 1024 * 1024) {
+          $('csv-warning').classList.remove('hidden');
+          $('csv-warning').textContent = 'This file is larger than 5MB. Please export a smaller CSV for the classroom tool.';
+          return;
+        }
+
+        const text = await file.text();
+
+        try {
+          const parsed = parseCsvText(text);
+          state.collect.csvFileName = file.name;
+          state.collect.csvText = text;
+          state.collect.parsed = parsed;
+          state.collect.csvTooLargeToPersist = false;
+
+          $('csv-meta').innerHTML = `<span class="font-semibold">Loaded:</span> ${escapeHtml(file.name)} (${Math.round(file.size / 1024)} KB)`;
+
+          // Auto notes
+          if (!(state.notes.collect || '').trim()) {
+            state.notes.collect = `Dataset file: ${file.name}\nRows: ${parsed.stats.overall.rows}\nColumns: ${parsed.stats.overall.cols}`;
+          }
+
+          markCompletedIfReady();
+          persistDebounced();
+          renderAll();
+
+          // Mentor prompt
+          pushMessage('assistant', 'Thanks. In one sentence: what does one row in your CSV represent in real life?');
+
+        } catch (err) {
+          $('csv-warning').classList.remove('hidden');
+          $('csv-warning').textContent = 'Could not parse CSV: ' + (err.message || String(err));
+        } finally {
+          e.target.value = '';
+        }
+      };
+
+      if (state.collect.csvFileName && $('csv-meta')) {
+        $('csv-meta').innerHTML = `<span class="font-semibold">Loaded:</span> ${escapeHtml(state.collect.csvFileName)}`;
+      }
+
+      const warn = $('csv-warning');
+      if (warn && state.collect.csvTooLargeToPersist) {
+        warn.classList.remove('hidden');
+        warn.textContent = 'Note: Your CSV is too large to save into localStorage. If you refresh the page, you may need to re-upload the file.';
+      }
+
+      const btn = document.getElementById('collect-save');
+      if (btn) {
+        btn.onclick = () => {
+          if (!state.collect.parsed) return;
+          state.completed.collect = true;
+          persistDebounced();
+          renderAll();
+          toast('Collect stage confirmed');
+        };
+      }
+    }
+
+    function renderCleanStage(container) {
+      const parsed = state.collect.parsed;
+      if (!parsed) {
+        container.innerHTML = `
+          <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-amber-800 text-sm">
+            Upload a CSV in Collect before you can clean it.
+          </div>
+        `;
+        setStageAlert('This stage is locked until you upload a CSV in Collect.');
+        return;
+      }
+
+      const issues = detectIssues(parsed);
+      const missingTotal = Object.values(issues.missingByCol).reduce((a, b) => a + b, 0);
+      const outlierTotal = Object.values(issues.outlierCountsByCol).reduce((a, b) => a + b, 0);
+
+      const fields = parsed.fields;
+      const labelColOptions = [''].concat(fields);
+
+      container.innerHTML = `
+        <div class="space-y-4">
+
+          <div class="bg-white border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Cleaning checklist</h3>
+            <p class="text-sm text-slate-600 mt-1">You choose the decisions. The tool applies them and prepares a cleaned CSV.</p>
+
+            <div class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                <div class="text-xs font-bold text-slate-500 uppercase">Missing cells</div>
+                <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${missingTotal}</div>
+              </div>
+              <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                <div class="text-xs font-bold text-slate-500 uppercase">Outlier values</div>
+                <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${outlierTotal}</div>
+              </div>
+              <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                <div class="text-xs font-bold text-slate-500 uppercase">Numeric columns</div>
+                <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${parsed.stats.overall.numericFields.length}</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">1) Missing values</h3>
+            <p class="text-sm text-slate-600 mt-1">Choose one approach.</p>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button data-missing="delete_rows" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.missing === 'delete_rows' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Delete rows with missing</button>
+              <button data-missing="fill" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.missing === 'fill' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Fill missing values</button>
+            </div>
+            <div class="mt-2 text-xs text-slate-500">If you fill missing values, numeric columns use the column mean. Other columns use “unknown”.</div>
+          </div>
+
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">2) Outliers</h3>
+            <p class="text-sm text-slate-600 mt-1">Choose one approach.</p>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button data-outliers="remove" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.outliers === 'remove' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Remove outlier rows</button>
+              <button data-outliers="keep" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.outliers === 'keep' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Keep all (highlight outliers)</button>
+            </div>
+            <div class="mt-2 text-xs text-slate-500">Outliers are values more than 3 standard deviations from the column mean (numeric columns only).</div>
+          </div>
+
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">3) Label consistency (optional)</h3>
+            <p class="text-sm text-slate-600 mt-1">If you have a label column (for categories), you can standardise it.</p>
+
+            <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="text-xs font-bold text-slate-500 uppercase">Label column</label>
+                <div class="relative mt-1">
+                  <select id="label-col" class="appearance-none bg-white border border-slate-300 text-slate-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 pr-8 cursor-pointer">
+                    ${labelColOptions.map(c => `<option value="${escapeHtml(c)}" ${c === state.clean.plan.labelColumn ? 'selected' : ''}>${escapeHtml(c || '(none)')}</option>`).join('')}
+                  </select>
+                  <i data-lucide="chevron-down" class="absolute right-2 top-3 w-4 h-4 text-slate-500 pointer-events-none"></i>
+                </div>
+              </div>
+              <div>
+                <label class="text-xs font-bold text-slate-500 uppercase">Standardise</label>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <button data-label="lower_trim" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.labelStandardise === 'lower_trim' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Trim + lowercase</button>
+                  <button data-label="none" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.labelStandardise === 'none' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Do not change</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex items-center flex-wrap gap-2">
+            <button id="apply-cleaning" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">Apply cleaning</button>
+            <button id="download-cleaned" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed" disabled>Download cleaned CSV</button>
+            <span id="clean-status" class="text-sm text-slate-600"></span>
+          </div>
+
+          <div id="clean-preview" class="space-y-3"></div>
+        </div>
+      `;
+
+      // Wire choices
+      container.querySelectorAll('.clean-choice').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const el = e.currentTarget;
+          const missing = el.getAttribute('data-missing');
+          const outliers = el.getAttribute('data-outliers');
+          const label = el.getAttribute('data-label');
+
+          if (missing) state.clean.plan.missing = missing;
+          if (outliers) state.clean.plan.outliers = outliers;
+          if (label) state.clean.plan.labelStandardise = label;
+
+          persistDebounced();
+          renderAll();
+        });
+      });
+
+      $('label-col').addEventListener('change', (e) => {
+        state.clean.plan.labelColumn = e.target.value;
+        persistDebounced();
+      });
+
+      $('apply-cleaning').onclick = () => {
+        const plan = state.clean.plan;
+
+        if (!plan.missing || !plan.outliers) {
+          $('clean-status').textContent = 'Choose an option for missing values and outliers.';
+          $('clean-status').className = 'text-sm text-rose-700';
+          return;
+        }
+
+        // If label standardise is chosen, label column must be set.
+        if (plan.labelStandardise === 'lower_trim' && !plan.labelColumn) {
+          $('clean-status').textContent = 'Pick a label column or choose “Do not change”.';
+          $('clean-status').className = 'text-sm text-rose-700';
+          return;
+        }
+
+        const cleaned = applyCleaning(parsed, plan);
+        state.clean.cleaned = cleaned;
+        state.clean.downloaded = false;
+
+        // Helpful notes
+        if (!(state.notes.clean || '').trim()) {
+          state.notes.clean = cleaned.log.join('\n');
+        }
+
+        $('clean-status').textContent = 'Cleaning applied. Review the preview, then download.';
+        $('clean-status').className = 'text-sm text-emerald-700';
+
+        persistDebounced();
+        renderAll();
+
+        // Mentor question
+        pushMessage('assistant', 'Before you download: does the cleaned preview still represent the real-world situation you care about?');
+      };
+
+      const downloadBtn = $('download-cleaned');
+      downloadBtn.disabled = !state.clean.cleaned;
+      downloadBtn.onclick = () => {
+        if (!state.clean.cleaned) return;
+        const { fields, rows } = state.clean.cleaned;
+        const csv = Papa.unparse(rows, { columns: fields });
+        const base = (state.collect.csvFileName || 'dataset.csv').replace(/[^a-zA-Z0-9_.-]/g, '_');
+        downloadFile(csv, 'cleaned_' + base, 'text/csv;charset=utf-8');
+        state.clean.downloaded = true;
+        markCompletedIfReady();
+        persistDebounced();
+        renderAll();
+        toast('Cleaned CSV downloaded');
+      };
+
+      // Preview
+      const preview = $('clean-preview');
+      if (state.clean.cleaned) {
+        const c = state.clean.cleaned;
+        const logHtml = `
+          <div class="bg-white border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Cleaning log</h3>
+            <ul class="mt-2 text-sm text-slate-700 list-disc list-inside space-y-1">
+              ${c.log.map(x => `<li>${escapeHtml(x)}</li>`).join('')}
+            </ul>
+          </div>
+        `;
+
+        const previewHtml = `
+          <div class="bg-white border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Cleaned preview</h3>
+            <p class="text-sm text-slate-600 mt-1">Highlights: yellow = filled, green = label standardised, red = outlier value.</p>
+            <div class="mt-3">${buildCsvPreviewTable(c.fields, c.rows, c.annotations, 12)}</div>
+          </div>
+        `;
+
+        preview.innerHTML = logHtml + previewHtml;
+      } else {
+        preview.innerHTML = '';
+      }
+
+      // Gate
+      markCompletedIfReady();
+    }
+
+    function recommendWidgets(problemType) {
+      if (problemType === 'regression') {
+        return [
+          {
+            name: 'Linear Regression',
+            path: '../../widgets/linear-regression/index.html',
+            whenToUse: 'Use this when you are predicting a number (for example temperature, distance, or time).'
+          }
+        ];
+      }
+      if (problemType === 'classification') {
+        return [
+          {
+            name: 'Decision Tree',
+            path: '../../widgets/decision-tree/index.html',
+            whenToUse: 'Use this when you are predicting a category (for example safe/unsafe, healthy/unhealthy).'
+          },
+          {
+            name: 'k-NN',
+            path: '../../widgets/knn/index.html',
+            whenToUse: 'Use this when similar examples should get the same label.'
+          },
+          {
+            name: 'Logistic Regression',
+            path: '../../widgets/logistic-regression/index.html',
+            whenToUse: 'Use this when you want a simple yes/no decision and you can measure clear numeric features.'
+          }
+        ];
+      }
+      if (problemType === 'clustering') {
+        return [
+          {
+            name: 'K-Means',
+            path: '../../widgets/k-means/index.html',
+            whenToUse: 'Use this when you want to find groups in the data without labels.'
+          }
+        ];
+      }
+      return [];
+    }
+
+    function renderTrainStage(container) {
+      if (!state.clean.cleaned) {
+        container.innerHTML = `
+          <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-amber-800 text-sm">
+            Apply cleaning and download your cleaned CSV before training.
+          </div>
+        `;
+        setStageAlert('This stage is locked until you complete Clean (apply cleaning and download cleaned data).');
+        return;
+      }
+
+      const problemType = state.train.problemType;
+      const target = escapeHtml(state.train.targetColumn || '');
+      const result = escapeHtml(state.train.studentResult || '');
+
+      const rec = state.train.recommended || [];
+
+      container.innerHTML = `
+        <div class="space-y-4">
+
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Choose your problem type</h3>
+            <p class="text-sm text-slate-600 mt-1">Pick the option that matches your goal.</p>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button data-ptype="regression" class="ptype px-3 py-2 rounded-lg border text-sm font-semibold ${problemType === 'regression' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Predict a number</button>
+              <button data-ptype="classification" class="ptype px-3 py-2 rounded-lg border text-sm font-semibold ${problemType === 'classification' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Predict a category</button>
+              <button data-ptype="clustering" class="ptype px-3 py-2 rounded-lg border text-sm font-semibold ${problemType === 'clustering' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Find groups (no labels)</button>
+            </div>
+          </div>
+
+          <div class="bg-white border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Target column (optional)</h3>
+            <p class="text-sm text-slate-600 mt-1">If you are predicting something, which column is the thing you want to predict?</p>
+            <div class="relative mt-2">
+              <select id="target-col" class="appearance-none bg-white border border-slate-300 text-slate-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 pr-8 cursor-pointer">
+                <option value="">(not sure yet)</option>
+                ${(state.collect.parsed?.fields || []).map(f => `<option value="${escapeHtml(f)}" ${f === state.train.targetColumn ? 'selected' : ''}>${escapeHtml(f)}</option>`).join('')}
+              </select>
+              <i data-lucide="chevron-down" class="absolute right-2 top-3 w-4 h-4 text-slate-500 pointer-events-none"></i>
+            </div>
+          </div>
+
+          <div id="recommendations" class="space-y-3"></div>
+
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Record your result</h3>
+            <p class="text-sm text-slate-600 mt-1">After you try the widget, paste your result here (for example accuracy, MSE, or purity).</p>
+            <input id="train-result" class="mt-3 w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Example: Accuracy 87%" value="${result}" />
+            <div class="mt-3 flex items-center justify-between">
+              <button id="train-save" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">Save Train stage</button>
+              <span id="train-status" class="text-sm text-slate-600"></span>
+            </div>
+          </div>
+
+        </div>
+      `;
+
+      container.querySelectorAll('.ptype').forEach(btn => {
+        btn.addEventListener('click', () => {
+          state.train.problemType = btn.getAttribute('data-ptype');
+          state.train.recommended = recommendWidgets(state.train.problemType);
+          persistDebounced();
+          renderAll();
+          pushMessage('assistant', 'Good. What is one example of an input reading, and what output label/number should the model produce?');
+        });
+      });
+
+      $('target-col').addEventListener('change', (e) => {
+        state.train.targetColumn = e.target.value;
+        persistDebounced();
+      });
+
+      const recEl = $('recommendations');
+      if (state.train.problemType) {
+        const items = state.train.recommended || [];
+        recEl.innerHTML = `
+          <div class="bg-white border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Recommended widget(s)</h3>
+            <p class="text-sm text-slate-600 mt-1">Open one widget and upload your cleaned CSV there.</p>
+            <div class="mt-3 space-y-3">
+              ${items.map(w => `
+                <div class="border border-slate-200 rounded-lg p-3 bg-slate-50">
+                  <div class="flex items-start justify-between gap-3">
+                    <div>
+                      <div class="font-bold text-slate-800">${escapeHtml(w.name)}</div>
+                      <div class="text-sm text-slate-600 mt-1">${escapeHtml(w.whenToUse)}</div>
+                    </div>
+                    <a href="${escapeHtml(w.path)}" target="_blank" rel="noopener" class="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold whitespace-nowrap">
+                      Open
+                    </a>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+            <div class="mt-3 text-xs text-slate-500">After testing, come back and record your result. You will use it in the proposal.</div>
+          </div>
+        `;
+      } else {
+        recEl.innerHTML = `
+          <div class="bg-white border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Next step</h3>
+            <p class="text-sm text-slate-600 mt-1">Choose a problem type to see recommended widgets.</p>
+          </div>
+        `;
+      }
+
+      $('train-save').onclick = () => {
+        state.train.studentResult = $('train-result').value.trim();
+        if (!state.train.problemType) {
+          $('train-status').textContent = 'Choose a problem type first.';
+          $('train-status').className = 'text-sm text-rose-700';
+          return;
+        }
+
+        // Helpful notes
+        if (!(state.notes.train || '').trim()) {
+          const t = state.train.targetColumn ? `Target: ${state.train.targetColumn}` : 'Target: (not set)';
+          const r = state.train.studentResult ? `Result: ${state.train.studentResult}` : 'Result: (not recorded)';
+          const w = (state.train.recommended || [])[0]?.name ? `Widget: ${(state.train.recommended || [])[0].name}` : 'Widget: (not set)';
+          state.notes.train = `${t}\n${w}\n${r}`;
+        }
+
+        markCompletedIfReady();
+        persistDebounced();
+        renderAll();
+
+        $('train-status').textContent = 'Saved.';
+        $('train-status').className = 'text-sm text-emerald-700';
+
+        pushMessage('assistant', 'What is one risk if the model is wrong, and how will you handle it safely?');
+      };
+
+      $('train-result').addEventListener('input', () => {
+        state.train.studentResult = $('train-result').value;
+        persistDebounced();
+      });
+
+      markCompletedIfReady();
+    }
+
+    function renderDeployStage(container) {
+      container.innerHTML = `
+        <div class="space-y-4">
+
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Deployment context</h3>
+            <p class="text-sm text-slate-600 mt-1">Where will this run, and who will use it?</p>
+            <textarea id="deploy-context" class="mt-3 w-full min-h-[90px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Example: The ESP32 will sit near the doorway and measure…">${escapeHtml(state.deploy.usageContext)}</textarea>
+          </div>
+
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Alerts and action</h3>
+            <p class="text-sm text-slate-600 mt-1">What happens after the model makes a prediction?</p>
+            <textarea id="deploy-alert" class="mt-3 w-full min-h-[90px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Example: If risk is high, the device will…">${escapeHtml(state.deploy.alertPlan)}</textarea>
+          </div>
+
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Risk and safety</h3>
+            <p class="text-sm text-slate-600 mt-1">What could go wrong, and what is your safety plan?</p>
+            <textarea id="deploy-risk" class="mt-3 w-full min-h-[90px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Example: If it misses an event…">${escapeHtml(state.deploy.riskPlan)}</textarea>
+          </div>
+
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <h3 class="font-bold text-slate-800">Improve the model</h3>
+            <p class="text-sm text-slate-600 mt-1">How will you make it better after testing?</p>
+            <textarea id="deploy-improve" class="mt-3 w-full min-h-[90px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Example: Collect 50 more examples in…">${escapeHtml(state.deploy.improvementPlan)}</textarea>
+          </div>
+
+          <div class="flex items-center justify-between">
+            <button id="deploy-generate" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">Generate proposal</button>
+            <span id="deploy-status" class="text-sm text-slate-600"></span>
+          </div>
+
+        </div>
+      `;
+
+      const bind = (id, field) => {
+        $(id).addEventListener('input', () => {
+          state.deploy[field] = $(id).value;
+          persistDebounced();
+        });
+      };
+
+      bind('deploy-context', 'usageContext');
+      bind('deploy-alert', 'alertPlan');
+      bind('deploy-risk', 'riskPlan');
+      bind('deploy-improve', 'improvementPlan');
+
+      $('deploy-generate').onclick = async () => {
+        $('deploy-status').textContent = 'Generating proposal…';
+        $('deploy-status').className = 'text-sm text-slate-600';
+
+        let text = '';
+        try {
+          const systemPrompt = buildProposalSynthesisSystemPrompt();
+          text = await callGeminiWithSystemPrompt({
+            systemPrompt,
+            userText: 'Write the one-page proposal now. If you detect missing or incorrect information, include a short "Fix before submission" section at the end.'
+          });
+        } catch (err) {
+          console.warn('Proposal synthesis failed, falling back to deterministic proposal:', err);
+          text = buildProposalText();
+        }
+
+        state.proposal.text = text;
+        $('proposal').value = text;
+
+        // Notes
+        if (!(state.notes.deploy || '').trim()) {
+          state.notes.deploy = 'Deployment summary written. Proposal generated.';
+        }
+
+        markCompletedIfReady();
+        persistDebounced();
+        renderAll();
+
+        $('deploy-status').textContent = 'Proposal generated.';
+        $('deploy-status').className = 'text-sm text-emerald-700';
+
+        pushMessage('assistant', 'Before you submit: what is one thing you will test in the real world first?');
+      };
+
+      markCompletedIfReady();
+    }
+
+    function buildProposalText() {
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: '2-digit' });
+
+      const ps = (state.define.problemStatement || '').trim() || '(not provided)';
+      const success = (state.define.successMeasure || '').trim() || '(not provided)';
+
+      const datasetName = (state.collect.csvFileName || '').trim() || '(not provided)';
+      const parsed = state.collect.parsed;
+      const rows = parsed?.stats?.overall?.rows;
+      const cols = parsed?.stats?.overall?.cols;
+      const missingPct = parsed?.stats?.overall?.missingPct;
+
+      const cleanLog = (state.clean.cleaned?.log || []).map(x => `- ${x}`).join('\n') || '- (not cleaned yet)';
+
+      const ptype = (state.train.problemType || '').trim() || '(not selected)';
+      const widget = (state.train.recommended || [])[0]?.name || '(not selected)';
+      const result = (state.train.studentResult || '').trim() || '(not recorded)';
+      const target = (state.train.targetColumn || '').trim() || '(not specified)';
+
+      const usage = (state.deploy.usageContext || '').trim() || '(not provided)';
+      const alertPlan = (state.deploy.alertPlan || '').trim() || '(not provided)';
+      const risk = (state.deploy.riskPlan || '').trim() || '(not provided)';
+      const improve = (state.deploy.improvementPlan || '').trim() || '(not provided)';
+
+      const noteDefine = (state.notes.define || '').trim();
+      const noteCollect = (state.notes.collect || '').trim();
+      const noteClean = (state.notes.clean || '').trim();
+      const noteTrain = (state.notes.train || '').trim();
+      const noteDeploy = (state.notes.deploy || '').trim();
+
+      const proposal = [
+        'One-page project proposal',
+        `Date: ${dateStr}`,
+        '',
+        '1) Problem definition',
+        `Problem statement: ${ps}`,
+        `Success measure: ${success}`,
+        noteDefine ? `Notes: ${noteDefine}` : null,
+        '',
+        '2) Data collection strategy',
+        `Dataset file: ${datasetName}`,
+        (Number.isFinite(rows) && Number.isFinite(cols)) ? `Dataset size: ${rows} rows, ${cols} columns` : null,
+        (Number.isFinite(missingPct)) ? `Missing cells (before cleaning): ${missingPct.toFixed(1)}%` : null,
+        noteCollect ? `Notes: ${noteCollect}` : null,
+        '',
+        '3) Data cleaning plan',
+        cleanLog,
+        noteClean ? `Notes: ${noteClean}` : null,
+        '',
+        '4) Model plan',
+        `Problem type: ${ptype}`,
+        `Target column: ${target}`,
+        `Recommended widget to test: ${widget}`,
+        `Recorded result: ${result}`,
+        noteTrain ? `Notes: ${noteTrain}` : null,
+        '',
+        '5) Deployment and improvement',
+        `Where and how it will be used: ${usage}`,
+        `Alerts and action: ${alertPlan}`,
+        `Risk and safety plan: ${risk}`,
+        `How we will improve after testing: ${improve}`,
+        noteDeploy ? `Notes: ${noteDeploy}` : null,
+        '',
+        'Next step',
+        'Run a small real-world test, collect feedback, and iterate on the dataset and cleaning choices before final training.'
+      ].filter(x => x !== null).join('\n');
+
+      return proposal;
+    }
+
+    function renderStageContent() {
+      setStageAlert('');
+      const container = $('stage-content');
+      const key = STAGES[state.currentStageIndex].key;
+
+      if (key === 'define') return renderDefineStage(container);
+      if (key === 'collect') return renderCollectStage(container);
+      if (key === 'clean') return renderCleanStage(container);
+      if (key === 'train') return renderTrainStage(container);
+      if (key === 'deploy') return renderDeployStage(container);
+    }
+
+    // ----------------------------
+    // Global UI wiring
+    // ----------------------------
+
+    function renderAll() {
+      renderStageSelect();
+      renderProgress();
+      renderStageHeader();
+      renderStageContent();
+
+      // Proposal panel
+      $('proposal').value = state.proposal.text || buildProposalText();
+
+      // Enable download proposal header button only when we have something
+      $('export-proposal').disabled = !(($('proposal').value || '').trim().length > 0);
+
+      // Update stage completion flags
+      markCompletedIfReady();
+      $('stage-next').disabled = !canAdvance();
+
+      // Icons
+      if (window.lucide?.createIcons) window.lucide.createIcons();
+
+      // Stage selector remains disabled (linear navigation via side list)
+      $('stage-select').disabled = true;
+
+      // Update chat
+      renderMessages();
+
+      // Save status
+      $('save-status').textContent = formatTimestamp(state.lastSavedAt);
+    }
+
+    function advanceStage() {
+      const key = STAGES[state.currentStageIndex].key;
+      if (!canAdvance()) return;
+
+      state.completed[key] = true;
+      const nextIdx = state.currentStageIndex + 1;
+      if (nextIdx >= STAGES.length) {
+        persistDebounced();
+        renderAll();
+        return;
+      }
+
+      state.currentStageIndex = nextIdx;
+      persistDebounced();
+      renderAll();
+
+      pushMessage('assistant', 'Great. What is the next thing you need to decide in this stage?');
+    }
+
+    async function loopBackToPrevious() {
+      if (state.currentStageIndex <= 0) return;
+
+      const ok = await confirmModal({
+        title: 'Loop back to an earlier stage?',
+        desc: 'This will move you back one stage. Later stages will remain saved, but you may need to review them after you make changes.',
+        okText: 'Loop back',
+        cancelText: 'Stay here'
+      });
+
+      if (!ok) return;
+
+      state.currentStageIndex = state.currentStageIndex - 1;
+
+      // Mark later stages as not completed (forces re-check)
+      for (let i = state.currentStageIndex + 1; i < STAGES.length; i++) {
+        state.completed[STAGES[i].key] = false;
+      }
+
+      persistDebounced();
+      renderAll();
+      toast('Moved back one stage');
+    }
+
+    function initEvents() {
+      $('chat-send').addEventListener('click', () => sendChat($('chat-input').value));
+      $('chat-input').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          sendChat($('chat-input').value);
+        }
+      });
+
+      document.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          $('chat-input').focus();
+        }
+      });
+
+      $('mentor-nudge').addEventListener('click', () => {
+        pushMessage('user', 'Ask me the next question for this stage.');
+        sendChat('Ask me the next question for this stage.');
+      });
+
+      $('stage-next').addEventListener('click', () => advanceStage());
+      $('loop-back').addEventListener('click', () => loopBackToPrevious());
+
+      $('stage-notes').addEventListener('input', () => {
+        const key = STAGES[state.currentStageIndex].key;
+        state.notes[key] = $('stage-notes').value;
+        persistDebounced();
+      });
+
+      $('copy-notes').addEventListener('click', () => {
+        const key = STAGES[state.currentStageIndex].key;
+        copyText(state.notes[key] || '');
+      });
+
+      $('copy-chat').addEventListener('click', () => {
+        const lines = state.messages.map(m => {
+          const who = (m.role === 'user') ? 'Student' : 'Mentor';
+          const stage = STAGES.find(s => s.key === m.stageKey)?.name || 'Stage';
+          return `[${stage}] ${who}: ${m.content}`;
+        });
+        copyText(lines.join('\n\n'));
+      });
+
+      $('regen-proposal').addEventListener('click', () => {
+        const text = buildProposalText();
+        state.proposal.text = text;
+        $('proposal').value = text;
+        persistDebounced();
+        toast('Proposal refreshed');
+      });
+
+      $('copy-proposal').addEventListener('click', () => copyText($('proposal').value || ''));
+
+      $('download-proposal').addEventListener('click', () => {
+        const text = $('proposal').value || buildProposalText();
+        const file = 'proposal.txt';
+        downloadFile(text, file, 'text/plain;charset=utf-8');
+      });
+
+      $('export-proposal').addEventListener('click', () => {
+        const text = $('proposal').value || buildProposalText();
+        downloadFile(text, 'proposal.txt', 'text/plain;charset=utf-8');
+      });
+
+      $('reset-session').addEventListener('click', async () => {
+        const ok = await confirmModal({
+          title: 'Clear the whole session?',
+          desc: 'This deletes chat messages, uploaded CSV metadata, cleaning choices, and proposal text from this browser.',
+          okText: 'Clear',
+          cancelText: 'Cancel'
+        });
+        if (ok) clearSession();
+      });
+
+      // Keep proposal textarea in sync (read-only but we build drafts)
+      $('proposal').value = state.proposal.text || '';
+    }
+
+    // ----------------------------
+    // Boot
+    // ----------------------------
+
+    document.addEventListener('DOMContentLoaded', () => {
+      // Restore session if possible
+      const restored = loadSession();
+
+      // Seed chat if empty
+      if (!state.messages.length) {
+        state.messages.push({
+          role: 'assistant',
+          content: 'Welcome. In Define, we will find the real root cause using 5-Whys and then write a strong problem statement. Who are you trying to help (user name + a short characteristic), and what problem did you notice?',
+          ts: Date.now(),
+          stageKey: 'define'
+        });
+      }
+
+      initEvents();
+      renderAll();
+
+      if (restored && state.collect.csvTooLargeToPersist) {
+        toast('Session restored. Please re-upload your CSV (it was too large to save).');
+      } else if (restored) {
+        toast('Session restored');
+      }
+    });
+  </script>
+</body>
+</html>
