@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DSLC Proposal Chatbot</title>
   <meta name="color-scheme" content="light" />
+  <meta name="description" content="Interactive Data Science Lifecycle mentor for students" />
 
   <!--
     DSLC Proposal Chatbot (single-file HTML)
@@ -22,59 +23,228 @@
     - This file stores session state in localStorage where possible.
   -->
 
+  <!-- Distinctive Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/lucide@0.469.0/dist/umd/lucide.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <style>
-    /* Tiny animation helpers (mirrors widget feel) */
-    .fade-in { animation: fadeIn 0.18s ease-out; }
-    .slide-in-from-top-2 { animation: slideIn 0.18s ease-out; }
-    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-    @keyframes slideIn { from { transform: translateY(-0.5rem); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    :root {
+      --color-primary: #0A4D8C;
+      --color-primary-light: #1E6BB8;
+      --color-primary-dark: #083A6B;
+      --color-accent: #FF6B35;
+      --color-accent-light: #FF8B61;
+      --color-success: #0C8B4F;
+      --color-warning: #F59E0B;
+      --color-surface: #FAFBFC;
+      --color-surface-alt: #F3F5F7;
+      --color-text: #1A2332;
+      --color-text-muted: #5F6C7B;
+      --shadow-sm: 0 1px 3px rgba(10, 77, 140, 0.06), 0 1px 2px rgba(10, 77, 140, 0.04);
+      --shadow-md: 0 4px 8px rgba(10, 77, 140, 0.08), 0 2px 4px rgba(10, 77, 140, 0.05);
+      --shadow-lg: 0 12px 24px rgba(10, 77, 140, 0.12), 0 4px 8px rgba(10, 77, 140, 0.06);
+      --radius: 12px;
+      --radius-sm: 8px;
+      --font-display: 'DM Sans', -apple-system, system-ui, sans-serif;
+      --font-body: 'Inter', -apple-system, system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+    }
 
-    /* Slightly nicer scrollbars where supported */
-    .nice-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
-    .nice-scroll::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.35); border-radius: 999px; border: 2px solid rgba(255,255,255,0.8); }
-    .nice-scroll::-webkit-scrollbar-track { background: rgba(241,245,249,0.9); }
+    * { box-sizing: border-box; }
+    
+    html, body { 
+      height: 100%; 
+      font-family: var(--font-body);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
 
-    /* Make the whole app feel like a widget */
-    html, body { height: 100%; }
+    body {
+      background: linear-gradient(135deg, #F0F4F8 0%, #E6EDF3 100%);
+      background-attachment: fixed;
+    }
+
+    /* Typography enhancements */
+    h1, h2, h3, .heading { font-family: var(--font-display); letter-spacing: -0.02em; }
+    
+    /* Refined animations */
+    .fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+    .slide-in-from-top-2 { animation: slideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1); }
+    .scale-in { animation: scaleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+    
+    @keyframes fadeIn { 
+      from { opacity: 0; } 
+      to { opacity: 1; } 
+    }
+    
+    @keyframes slideIn { 
+      from { transform: translateY(-8px); opacity: 0; } 
+      to { transform: translateY(0); opacity: 1; } 
+    }
+    
+    @keyframes scaleIn {
+      from { transform: scale(0.96); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+
+    @keyframes shimmer {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+
+    /* Elevated scrollbar design */
+    .nice-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .nice-scroll::-webkit-scrollbar-thumb { 
+      background: linear-gradient(180deg, var(--color-primary-light), var(--color-primary));
+      border-radius: 999px; 
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .nice-scroll::-webkit-scrollbar-thumb:hover { 
+      background: linear-gradient(180deg, var(--color-primary), var(--color-primary-dark));
+      background-clip: padding-box;
+    }
+    .nice-scroll::-webkit-scrollbar-track { 
+      background: var(--color-surface-alt);
+      border-radius: 999px;
+    }
+
+    /* Elevated surface effect */
+    .surface {
+      background: white;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-sm);
+      border: 1px solid rgba(10, 77, 140, 0.08);
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .surface:hover {
+      box-shadow: var(--shadow-md);
+      border-color: rgba(10, 77, 140, 0.12);
+    }
+
+    /* Gradient text accent */
+    .gradient-text {
+      background: linear-gradient(135deg, var(--color-primary), var(--color-primary-light));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* Refined button states */
+    button, .btn {
+      transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      font-weight: 500;
+    }
+
+    button:active:not(:disabled), .btn:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* Enhanced focus states */
+    button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+      outline: 2px solid var(--color-primary);
+      outline-offset: 2px;
+    }
+
+    /* Message bubble enhancements */
+    .message-bubble {
+      position: relative;
+      animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes slideUp {
+      from { 
+        opacity: 0;
+        transform: translateY(12px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* Stage badge glow effect */
+    .stage-badge-active {
+      box-shadow: 0 0 0 3px rgba(10, 77, 140, 0.1),
+                  0 2px 8px rgba(10, 77, 140, 0.15);
+    }
+
+    /* Texture overlay for depth */
+    .texture-overlay::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%230A4D8C' fill-opacity='0.02'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+      pointer-events: none;
+      border-radius: inherit;
+    }
+
+    /* Custom progress bar */
+    .progress-bar {
+      background: linear-gradient(90deg, var(--color-primary), var(--color-primary-light));
+      transition: width 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .progress-bar::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, 
+        transparent, 
+        rgba(255, 255, 255, 0.3), 
+        transparent
+      );
+      animation: shimmer 2s infinite;
+      background-size: 200% 100%;
+    }
   </style>
 </head>
-<body class="min-h-screen bg-slate-50 font-sans text-slate-900 p-4 md:p-8">
+<body class="min-h-screen font-sans text-[var(--color-text)] p-4 md:p-8">
 
   <div class="max-w-7xl mx-auto space-y-6">
 
     <!-- Header -->
-    <header class="flex flex-col md:flex-row md:items-start justify-between gap-4 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+    <header class="surface texture-overlay relative flex flex-col md:flex-row md:items-start justify-between gap-6 p-8 scale-in" style="animation-delay: 0.05s;">
       <div class="min-w-0">
-        <div class="flex items-start gap-3">
-          <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-blue-600 flex items-center justify-center text-white font-extrabold tracking-tight">DS</div>
+        <div class="flex items-start gap-4">
+          <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-primary-light)] flex items-center justify-center text-white font-bold text-xl tracking-tight shadow-lg" style="box-shadow: 0 8px 16px rgba(10, 77, 140, 0.2);">DS</div>
           <div class="min-w-0">
-            <h1 class="text-2xl font-bold text-slate-800 truncate">DSLC Proposal Chatbot</h1>
-            <p class="text-slate-500 mt-1">A guided mentor for planning a data science proposal from your problem statement and your dataset.</p>
+            <h1 class="heading text-2xl md:text-3xl font-semibold gradient-text">Data Science Lifecycle</h1>
+            <p class="text-sm text-[var(--color-text-muted)] mt-1 font-light">Your AI mentor for practical data-driven proposals</p>
           </div>
         </div>
 
-        <div class="mt-4 flex flex-wrap items-center gap-2">
-          <button id="reset-session" class="flex items-center gap-2 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-rose-700 bg-rose-50 hover:bg-rose-100 rounded transition-colors">
-            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-            Clear session
+        <div class="mt-5 flex flex-wrap items-center gap-3">
+          <button id="reset-session" class="flex items-center gap-2 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg transition-all hover:shadow-sm">
+            <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
+            Reset
           </button>
-          <button id="export-proposal" class="flex items-center gap-2 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded transition-colors">
-            <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
-            Download proposal
+          <button id="export-proposal" class="flex items-center gap-2 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-all hover:shadow-sm">
+            <i data-lucide="download" class="w-3.5 h-3.5"></i>
+            Export
           </button>
-          <span id="save-status" class="text-xs text-slate-500 ml-1">Not saved yet</span>
+          <span id="save-status" class="text-xs text-[var(--color-text-muted)] ml-2 font-mono">Not saved yet</span>
         </div>
       </div>
 
       <div class="flex items-center gap-3 self-start md:self-center">
-        <span class="text-sm font-medium text-slate-600">Stage:</span>
+        <span class="text-sm font-semibold text-[var(--color-text-muted)] uppercase tracking-wider">Stage:</span>
         <div class="relative">
-          <select id="stage-select" class="appearance-none bg-slate-100 border border-slate-300 text-slate-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-56 p-2.5 pr-8 cursor-pointer" aria-label="Stage selector" disabled></select>
-          <i data-lucide="chevron-down" class="absolute right-2 top-3 w-4 h-4 text-slate-500 pointer-events-none"></i>
+          <select id="stage-select" class="appearance-none bg-[var(--color-surface)] border-2 border-[var(--color-primary)]/20 text-[var(--color-text)] text-sm rounded-xl focus:ring-2 focus:ring-[var(--color-primary)] focus:border-[var(--color-primary)] block w-56 p-3 pr-10 cursor-pointer font-medium" aria-label="Stage selector" disabled></select>
+          <i data-lucide="chevron-down" class="absolute right-3 top-3.5 w-4 h-4 text-[var(--color-primary)] pointer-events-none"></i>
         </div>
       </div>
     </header>
@@ -83,56 +253,61 @@
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
       <!-- LEFT PANEL: Chat -->
-      <section class="lg:col-span-4 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden sticky top-6 max-h-[min(55vh,720px)]">
-        <div class="p-5 border-b border-slate-200">
+      <section class="lg:col-span-4 surface flex flex-col overflow-hidden sticky top-6 max-h-[min(55vh,720px)] scale-in" style="animation-delay: 0.1s;">
+        <div class="p-6 border-b-2 border-[var(--color-primary)]/10">
           <div class="flex items-center justify-between gap-2">
-            <h2 class="font-semibold text-lg text-slate-800">Mentor chat</h2>
-            <button id="copy-chat" class="text-xs font-bold uppercase tracking-wide text-slate-600 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded transition-colors">
-              Copy chat
+            <div class="flex items-center gap-3">
+              <i data-lucide="message-circle" class="w-5 h-5 text-[var(--color-primary)]"></i>
+              <h2 class="heading text-xl font-semibold text-[var(--color-text)]">Chat with Mentor</h2>
+            </div>
+            <button id="copy-chat" class="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)] px-3 py-1.5 rounded-lg transition-all">
+              Copy
             </button>
           </div>
-          <p class="text-xs text-slate-500 mt-1">Ask one question at a time. The mentor will keep the plan focused and practical.</p>
+          <p class="text-sm text-[var(--color-text-muted)] mt-2 leading-relaxed">Ask one question at a time. The mentor will keep the plan focused and practical.</p>
         </div>
 
-        <div id="chat-scroll" class="nice-scroll flex-1 overflow-auto p-5 bg-slate-50">
-          <div id="messages" class="space-y-3"></div>
-          <div id="chat-loading" class="hidden mt-4 text-sm text-slate-500">Thinking<span id="dots">.</span></div>
+        <div id="chat-scroll" class="nice-scroll flex-1 overflow-auto p-6 bg-gradient-to-b from-[var(--color-surface)] to-white">
+          <div id="messages" class="space-y-4"></div>
+          <div id="chat-loading" class="hidden mt-4 text-sm text-[var(--color-primary)] font-medium">Thinking<span id="dots">.</span></div>
         </div>
 
-        <div class="p-4 border-t border-slate-200 bg-white">
+        <div class="p-5 border-t-2 border-[var(--color-primary)]/10 bg-white">
           <div class="flex gap-2">
-            <input id="chat-input" type="text" class="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Type your message…" aria-label="Chat input" />
-            <button id="chat-send" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold transition-colors" aria-label="Send message">
-              Send
+            <input id="chat-input" type="text" class="flex-1 bg-[var(--color-surface)] border-2 border-transparent focus:border-[var(--color-primary)] rounded-xl px-4 py-3 text-sm focus:outline-none transition-all" placeholder="Type your question…" aria-label="Chat input" />
+            <button id="chat-send" class="shrink-0 w-11 h-11 rounded-xl bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-primary-light)] hover:shadow-lg text-white flex items-center justify-center transition-all active:scale-95 shadow-md" aria-label="Send message">
+              <i data-lucide="send" class="w-4 h-4"></i>
             </button>
           </div>
-          <div class="mt-2 flex items-center justify-between">
-            <span class="text-[11px] text-slate-500">Shortcut: Ctrl/Cmd + K to focus</span>
-            <button id="mentor-nudge" class="text-[11px] font-semibold text-indigo-700 hover:text-indigo-800">Ask for next question</button>
+          <div class="mt-3 flex items-center justify-between">
+            <span class="text-xs text-[var(--color-text-muted)] font-mono">Ctrl/Cmd + K to focus</span>
+            <button id="mentor-nudge" class="text-sm text-[var(--color-primary)] hover:text-[var(--color-primary-dark)] font-semibold flex items-center gap-1.5">💡 Ask mentor to guide me</button>
           </div>
         </div>
       </section>
 
       <!-- CENTRE PANEL: Stage workspace -->
-      <section class="lg:col-span-5 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+      <section class="lg:col-span-5 surface p-8 scale-in" style="animation-delay: 0.15s;">
         <div class="flex items-start justify-between gap-4">
           <div>
-            <h2 id="stage-title" class="font-semibold text-lg text-slate-800">Stage</h2>
-            <p id="stage-desc" class="text-sm text-slate-500 mt-1">Stage description</p>
+            <h2 id="stage-title" class="heading text-2xl font-semibold text-[var(--color-text)]">1. Define</h2>
+            <p id="stage-desc" class="text-sm text-[var(--color-text-muted)] mt-1.5 leading-relaxed">Description</p>
           </div>
           <div class="flex items-center gap-2">
-            <button id="loop-back" class="hidden px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-sm font-semibold transition-colors">
+            <button id="loop-back" class="hidden flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-[var(--color-text)] bg-[var(--color-surface)] hover:bg-[var(--color-surface-alt)] rounded-xl transition-all border-2 border-transparent hover:border-[var(--color-primary)]/20">
+              <i data-lucide="arrow-left" class="w-4 h-4"></i>
               Loop back
             </button>
-            <button id="stage-next" class="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed" disabled>
+            <button id="stage-next" class="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-primary-light)] hover:shadow-lg text-white text-sm font-semibold rounded-xl transition-all active:scale-95 shadow-md" disabled>
               Next stage
+              <i data-lucide="arrow-right" class="w-4 h-4"></i>
             </button>
           </div>
         </div>
 
-        <div id="stage-alert" class="hidden mt-4 p-3 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 text-sm"></div>
+        <div id="stage-alert" class="hidden mt-5 p-4 rounded-xl border-2 border-[var(--color-warning)]/30 bg-amber-50 text-amber-900 text-sm font-medium leading-relaxed"></div>
 
-        <div class="mt-5 space-y-6" id="stage-content"></div>
+        <div class="mt-6 space-y-6" id="stage-content"></div>
       </section>
 
       <!-- RIGHT PANEL: Progress + Outputs -->
@@ -148,22 +323,22 @@
           </div>
 
           <div class="mt-4 space-y-2" id="stage-list"></div>
-          <p class="text-xs text-slate-500 mt-4">Linear flow is enforced. Use “Loop back” if you need to fix an earlier stage.</p>
+          <p class="text-sm text-[var(--color-text-muted)] mt-4">Linear flow is enforced. Use “Loop back” if you need to fix an earlier stage.</p>
         </div>
 
         <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
           <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide">Stage notes</h3>
-          <p class="text-xs text-slate-500 mt-1">This is your short summary for the proposal.</p>
+          <p class="text-sm text-[var(--color-text-muted)] mt-1">This is your short summary for the proposal.</p>
           <textarea id="stage-notes" class="mt-3 w-full min-h-[160px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Write a short summary for this stage…"></textarea>
           <div class="mt-3 flex items-center justify-between">
             <button id="copy-notes" class="text-xs font-bold uppercase tracking-wide text-slate-600 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded transition-colors">Copy</button>
-            <span id="notes-hint" class="text-xs text-slate-500">Saved automatically</span>
+            <span id="notes-hint" class="text-sm text-[var(--color-text-muted)]">Saved automatically</span>
           </div>
         </div>
 
         <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
           <h3 class="text-sm font-semibold text-slate-500 uppercase tracking-wide">One-page proposal</h3>
-          <p class="text-xs text-slate-500 mt-1">Generated at the end. You can still download a draft at any time.</p>
+          <p class="text-sm text-[var(--color-text-muted)] mt-1">Generated at the end. You can still download a draft at any time.</p>
           <button id="regen-proposal" class="mt-3 w-full flex items-center justify-center gap-2 py-3 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-all active:scale-95 shadow-sm">
             <i data-lucide="wand-2" class="w-4.5 h-4.5"></i>
             Generate / refresh
@@ -181,21 +356,21 @@
   </div>
 
   <!-- Modal: Confirm -->
-  <div id="modal" class="hidden fixed inset-0 bg-black/50 z-50 items-center justify-center p-4">
-    <div class="bg-white rounded-xl shadow-lg w-full max-w-lg border border-slate-200">
-      <div class="p-5 border-b border-slate-200 flex items-start justify-between gap-3">
+  <div id="modal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-50 items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg border-2 border-[var(--color-primary)]/10 scale-in">
+      <div class="p-6 border-b-2 border-[var(--color-primary)]/10 flex items-start justify-between gap-3">
         <div>
-          <h3 id="modal-title" class="text-lg font-bold text-slate-800">Confirm</h3>
-          <p id="modal-desc" class="text-sm text-slate-500 mt-1">Are you sure?</p>
+          <h3 id="modal-title" class="heading text-xl font-semibold text-[var(--color-text)]">Confirm</h3>
+          <p id="modal-desc" class="text-sm text-[var(--color-text-muted)] mt-2 leading-relaxed">Are you sure?</p>
         </div>
-        <button id="modal-close" class="text-slate-400 hover:text-slate-600" aria-label="Close">
+        <button id="modal-close" class="text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors" aria-label="Close">
           <i data-lucide="x" class="w-5 h-5"></i>
         </button>
       </div>
-      <div class="p-5">
-        <div class="flex justify-end gap-2">
-          <button id="modal-cancel" class="px-4 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-lg text-sm font-semibold">Cancel</button>
-          <button id="modal-ok" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">OK</button>
+      <div class="p-6">
+        <div class="flex justify-end gap-3">
+          <button id="modal-cancel" class="px-5 py-2.5 bg-white hover:bg-[var(--color-surface)] text-[var(--color-text)] border-2 border-[var(--color-primary)]/20 hover:border-[var(--color-primary)]/40 rounded-xl text-sm font-semibold transition-all">Cancel</button>
+          <button id="modal-ok" class="px-5 py-2.5 bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-primary-light)] hover:shadow-lg text-white rounded-xl text-sm font-semibold transition-all active:scale-95 shadow-md">OK</button>
         </div>
       </div>
     </div>
@@ -756,18 +931,17 @@
       for (const m of msgs) {
         const isUser = m.role === 'user';
         const wrap = document.createElement('div');
-        wrap.className = 'max-w-[92%] ' + (isUser ? 'ml-auto' : 'mr-auto');
+        wrap.className = 'max-w-[92%] message-bubble ' + (isUser ? 'ml-auto' : 'mr-auto');
 
         const bubble = document.createElement('div');
-        bubble.className =
-          'rounded-2xl px-4 py-3 shadow-sm border text-sm leading-relaxed whitespace-pre-wrap ' +
-          (isUser
-            ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white border-white/10 rounded-br-md'
-            : 'bg-white text-slate-900 border-slate-200 rounded-bl-md');
+        bubble.className = 'px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap shadow-sm border-2 ' + 
+          (isUser 
+            ? 'bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-primary-light)] text-white border-transparent shadow-md' 
+            : 'bg-white text-[var(--color-text)] border-[var(--color-primary)]/10');
         bubble.textContent = m.content;
 
         const meta = document.createElement('div');
-        meta.className = 'mt-1 text-[11px] text-slate-500 ' + (isUser ? 'text-right' : 'text-left');
+        meta.className = 'mt-2 text-[11px] font-mono text-[var(--color-text-muted)] ' + (isUser ? 'text-right' : 'text-left');
         const stageName = STAGES.find(s => s.key === m.stageKey)?.name || 'Stage';
         meta.textContent = stageName;
 
@@ -1144,7 +1318,7 @@
       `;
 
       const note = showNote
-        ? `<div class="mt-2 text-xs text-slate-500">Showing first ${head.length} columns. Your file has ${fields.length} columns.</div>`
+        ? `<div class="mt-2 text-sm text-[var(--color-text-muted)]">Showing first ${head.length} columns. Your file has ${fields.length} columns.</div>`
         : '';
 
       return `
@@ -1233,25 +1407,28 @@
 
         const row = document.createElement('button');
         row.type = 'button';
-        row.className = 'w-full text-left flex items-start gap-3 px-3 py-2 rounded-lg border ' +
-          (isCurrent ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white hover:bg-slate-50') +
-          ' transition-colors';
+        row.className = 'w-full text-left flex items-start gap-3 px-4 py-3 rounded-xl border-2 transition-all ' +
+          (isCurrent ? 'bg-gradient-to-r from-[var(--color-primary)]/5 to-[var(--color-primary-light)]/5 border-[var(--color-primary)] shadow-sm' : 
+           unlocked ? 'bg-white border-[var(--color-primary)]/10 hover:border-[var(--color-primary)]/30 hover:shadow-sm' : 
+           'bg-[var(--color-surface)] border-transparent opacity-60');
         row.disabled = !unlocked;
         row.setAttribute('aria-current', isCurrent ? 'step' : 'false');
 
         const badge = document.createElement('div');
-        badge.className = 'w-8 h-8 rounded-full flex items-center justify-center text-xs font-extrabold ' +
-          (isDone ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-600 border border-slate-200');
+        badge.className = 'w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold transition-all ' +
+          (isDone ? 'bg-gradient-to-br from-[var(--color-success)] to-emerald-600 text-white shadow-md' : 
+           isCurrent ? 'stage-badge-active bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-primary-light)] text-white' :
+           'bg-[var(--color-surface-alt)] text-[var(--color-text-muted)] border-2 border-[var(--color-primary)]/10');
         badge.textContent = String(idx + 1);
 
         const col = document.createElement('div');
         col.className = 'min-w-0 flex-1';
         col.innerHTML = `
-          <div class="flex items-center justify-between gap-2">
-            <div class="font-bold text-sm text-slate-800 truncate">${escapeHtml(s.name)}</div>
-            <div class="text-[11px] font-extrabold text-slate-500">${isDone ? 'Done' : (unlocked ? (isCurrent ? 'Now' : 'Open') : 'Locked')}</div>
+          <div class="font-semibold text-sm ${isCurrent ? 'text-[var(--color-primary)]' : 'text-[var(--color-text)]'}">
+            ${escapeHtml(s.name)}
+            ${isDone ? '<i data-lucide="check" class="inline-block w-3.5 h-3.5 ml-1 text-[var(--color-success)]"></i>' : ''}
           </div>
-          <div class="text-xs text-slate-500 mt-0.5">${escapeHtml(s.desc)}</div>
+          <div class="text-xs text-[var(--color-text-muted)] mt-1 leading-relaxed">${escapeHtml(s.desc)}</div>
         `;
 
         row.onclick = () => setStage(idx);
@@ -1304,7 +1481,7 @@
             <h3 class="font-bold text-slate-800">Data-Driven Problem Statement</h3>
             <p class="text-sm text-slate-600 mt-1">Translate your human problem into a specific question for the computer.</p>
             <textarea id="define-problem" class="mt-3 w-full min-h-[110px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Can we [classify/predict/detect] [target] using [data] to determine [outcome]?">${ps}</textarea>
-            <div class="mt-2 text-xs text-slate-500">Tip: Use the chat to help you translate your problem.</div>
+            <div class="mt-2 text-sm text-[var(--color-text-muted)]">Tip: Use the chat to help you translate your problem.</div>
           </div>
 
           <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
@@ -1401,7 +1578,7 @@
             <span id="collect-status" class="text-sm text-slate-600"></span>
           </div>
 
-          <div class="mt-3 text-xs text-slate-500">
+          <div class="mt-3 text-sm text-[var(--color-text-muted)]">
             Tip: If your file has missing values or inconsistent labels, that is fine. You will fix it in the Clean stage.
           </div>
         </div>
@@ -1538,7 +1715,7 @@
               <button data-missing="delete_rows" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.missing === 'delete_rows' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Delete rows with missing</button>
               <button data-missing="fill" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.missing === 'fill' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Fill missing values</button>
             </div>
-            <div class="mt-2 text-xs text-slate-500">If you fill missing values, numeric columns use the column mean. Other columns use “unknown”.</div>
+            <div class="mt-2 text-sm text-[var(--color-text-muted)]">If you fill missing values, numeric columns use the column mean. Other columns use “unknown”.</div>
           </div>
 
           <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
@@ -1548,7 +1725,7 @@
               <button data-outliers="remove" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.outliers === 'remove' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Remove outlier rows</button>
               <button data-outliers="keep" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.outliers === 'keep' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Keep all (highlight outliers)</button>
             </div>
-            <div class="mt-2 text-xs text-slate-500">Outliers are values more than 3 standard deviations from the column mean (numeric columns only).</div>
+            <div class="mt-2 text-sm text-[var(--color-text-muted)]">Outliers are values more than 3 standard deviations from the column mean (numeric columns only).</div>
           </div>
 
           <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
@@ -1822,7 +1999,7 @@
                 </div>
               `).join('')}
             </div>
-            <div class="mt-3 text-xs text-slate-500">After testing, come back and record your result. You will use it in the proposal.</div>
+            <div class="mt-3 text-sm text-[var(--color-text-muted)]">After testing, come back and record your result. You will use it in the proposal.</div>
           </div>
         `;
       } else {
