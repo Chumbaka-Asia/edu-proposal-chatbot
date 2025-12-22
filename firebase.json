@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "target": "chatbot",
     "public": "public",
     "ignore": [
       "firebase.json",

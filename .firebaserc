@@ -1,0 +1,16 @@
+{
+  "projects": {
+    "chatbot": "rnd-experiment-473900",
+    "default": "rnd-experiment-473900"
+  },
+  "targets": {
+    "rnd-experiment-473900": {
+      "hosting": {
+        "chatbot": [
+          "dslc-chatbot"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
