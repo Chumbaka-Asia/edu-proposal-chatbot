@@ -210,6 +210,24 @@
       animation: shimmer 2s infinite;
       background-size: 200% 100%;
     }
+
+    /* Segment highlighting for define stage */
+    .segment-highlight {
+      border: 2px solid var(--color-warning);
+      background-color: rgba(245, 158, 11, 0.05);
+      animation: highlightPulse 2s ease-in-out infinite;
+    }
+
+    @keyframes highlightPulse {
+      0%, 100% { 
+        border-color: var(--color-warning);
+        background-color: rgba(245, 158, 11, 0.05);
+      }
+      50% { 
+        border-color: var(--color-warning);
+        background-color: rgba(245, 158, 11, 0.1);
+      }
+    }
   </style>
 </head>
 <body class="min-h-screen font-sans text-[var(--color-text)] p-4 md:p-8">
@@ -253,7 +271,7 @@
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
       <!-- LEFT PANEL: Chat -->
-      <section class="lg:col-span-4 surface flex flex-col overflow-hidden sticky top-6 max-h-[min(55vh,720px)] scale-in" style="animation-delay: 0.1s;">
+      <section class="lg:col-span-4 surface flex flex-col overflow-hidden lg:sticky lg:top-6 lg:max-h-[min(55vh,720px)] min-h-[40vh] scale-in" style="animation-delay: 0.1s;">
         <div class="p-6 border-b-2 border-[var(--color-primary)]/10">
           <div class="flex items-center justify-between gap-2">
             <div class="flex items-center gap-3">
@@ -267,12 +285,12 @@
           <p class="text-sm text-[var(--color-text-muted)] mt-2 leading-relaxed">Ask one question at a time. The mentor will keep the plan focused and practical.</p>
         </div>
 
-        <div id="chat-scroll" class="nice-scroll flex-1 overflow-auto p-6 bg-gradient-to-b from-[var(--color-surface)] to-white">
+        <div id="chat-scroll" class="nice-scroll flex-1 overflow-auto p-4 sm:p-6 bg-gradient-to-b from-[var(--color-surface)] to-white">
           <div id="messages" class="space-y-4"></div>
           <div id="chat-loading" class="hidden mt-4 text-sm text-[var(--color-primary)] font-medium">Thinking<span id="dots">.</span></div>
         </div>
 
-        <div class="p-5 border-t-2 border-[var(--color-primary)]/10 bg-white">
+        <div class="p-4 sm:p-5 border-t-2 border-[var(--color-primary)]/10 bg-white">
           <div class="flex gap-2">
             <input id="chat-input" type="text" class="flex-1 bg-[var(--color-surface)] border-2 border-transparent focus:border-[var(--color-primary)] rounded-xl px-4 py-3 text-sm focus:outline-none transition-all" placeholder="Type your question…" aria-label="Chat input" />
             <button id="chat-send" class="shrink-0 w-11 h-11 rounded-xl bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-primary-light)] hover:shadow-lg text-white flex items-center justify-center transition-all active:scale-95 shadow-md" aria-label="Send message">
@@ -296,7 +314,7 @@
           <div class="flex items-center gap-2">
             <button id="loop-back" class="hidden flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-[var(--color-text)] bg-[var(--color-surface)] hover:bg-[var(--color-surface-alt)] rounded-xl transition-all border-2 border-transparent hover:border-[var(--color-primary)]/20">
               <i data-lucide="arrow-left" class="w-4 h-4"></i>
-              Loop back
+              Back
             </button>
             <button id="stage-next" class="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-[var(--color-primary)] to-[var(--color-primary-light)] hover:shadow-lg text-white text-sm font-semibold rounded-xl transition-all active:scale-95 shadow-md" disabled>
               Next
@@ -851,6 +869,11 @@
           'Define outputs to reach:',
           '1) A data-driven analytical problem statement: "Can we [classify/predict/detect] [target] using [data] to determine [outcome]?"',
           '2) A success measure (e.g., "Accuracy > 80%").',
+          '',
+          'PHASE 3: Recording Statements',
+          '- Once both the Data-Driven Problem Statement and Success Measure are complete, tell the student:',
+          '  "Now copy and paste your statements into the text boxes in the Define section. This will save your work so you can move to the next stage."',
+          '- Wait for them to confirm they have done this before discussing the Collect stage.',
           '</stage_instructions>'
         ],
         collect: [
@@ -1493,34 +1516,49 @@
       el.classList.remove('hidden');
     }
 
+    function getDefineSegmentFocus() {
+      // Determine which segment should be highlighted based on completion status
+      if (!state.define.opportunityStatement?.trim()) return 'opportunity';
+      if (!state.define.designThinkingProblemStatement?.trim()) return 'design-thinking';
+      if (!state.define.problemStatement?.trim()) return 'problem';
+      if (!state.define.successMeasure?.trim()) return 'success';
+      return null; // all complete
+    }
+
     function renderDefineStage(container) {
       const os = escapeHtml(state.define.opportunityStatement || '');
       const dt = escapeHtml(state.define.designThinkingProblemStatement || '');
       const ps = escapeHtml(state.define.problemStatement);
       const sm = escapeHtml(state.define.successMeasure);
+      
+      const focus = getDefineSegmentFocus();
+      const opportunityHighlight = focus === 'opportunity' ? 'segment-highlight' : '';
+      const designThinkingHighlight = focus === 'design-thinking' ? 'segment-highlight' : '';
+      const problemHighlight = focus === 'problem' ? 'segment-highlight' : '';
+      const successHighlight = focus === 'success' ? 'segment-highlight' : '';
 
       container.innerHTML = `
         <section class="space-y-3">
-          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${opportunityHighlight}">
             <h3 class="font-bold text-slate-800">Opportunity Statement</h3>
             <p class="text-sm text-slate-600 mt-1">Who is facing what problem?</p>
             <textarea id="define-opportunity" class="mt-3 w-full min-h-[80px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="[Person] is a [Role] who faces the problem of [What].">${os}</textarea>
           </div>
 
-          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${designThinkingHighlight}">
             <h3 class="font-bold text-slate-800">Design Thinking Problem Statement</h3>
             <p class="text-sm text-slate-600 mt-1">The root cause analysis (5 Whys).</p>
             <textarea id="define-design-thinking" class="mt-3 w-full min-h-[110px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="[Person], a [Characteristic], faces the problem of [what] at [where] during [when] through [how] because [root cause].">${dt}</textarea>
           </div>
 
-          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${problemHighlight}">
             <h3 class="font-bold text-slate-800">Data-Driven Problem Statement</h3>
             <p class="text-sm text-slate-600 mt-1">Translate your human problem into a specific question for the computer.</p>
             <textarea id="define-problem" class="mt-3 w-full min-h-[110px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Can we [classify/predict/detect] [target] using [data] to determine [outcome]?">${ps}</textarea>
             <div class="mt-2 text-sm text-[var(--color-text-muted)]">Tip: Use the chat to help you translate your problem.</div>
           </div>
 
-          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${successHighlight}">
             <h3 class="font-bold text-slate-800">Success measure</h3>
             <p class="text-sm text-slate-600 mt-1">Define a clear “we succeeded if…” check.</p>
             <input id="define-success" class="mt-3 w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Example: Detect slips within 2 seconds with at least 85% accuracy" value="${sm}" />
@@ -1559,10 +1597,10 @@
       };
 
       // Live gating
-      $('define-opportunity').addEventListener('input', () => { state.define.opportunityStatement = $('define-opportunity').value; persistDebounced(); });
-      $('define-design-thinking').addEventListener('input', () => { state.define.designThinkingProblemStatement = $('define-design-thinking').value; persistDebounced(); });
-      $('define-problem').addEventListener('input', () => { state.define.problemStatement = $('define-problem').value; markCompletedIfReady(); persistDebounced(); renderStageHeader(); });
-      $('define-success').addEventListener('input', () => { state.define.successMeasure = $('define-success').value; markCompletedIfReady(); persistDebounced(); renderStageHeader(); });
+      $('define-opportunity').addEventListener('input', () => { state.define.opportunityStatement = $('define-opportunity').value; persistDebounced(); renderDefineStage($('stage-content')); });
+      $('define-design-thinking').addEventListener('input', () => { state.define.designThinkingProblemStatement = $('define-design-thinking').value; persistDebounced(); renderDefineStage($('stage-content')); });
+      $('define-problem').addEventListener('input', () => { state.define.problemStatement = $('define-problem').value; markCompletedIfReady(); persistDebounced(); renderStageHeader(); renderDefineStage($('stage-content')); });
+      $('define-success').addEventListener('input', () => { state.define.successMeasure = $('define-success').value; markCompletedIfReady(); persistDebounced(); renderStageHeader(); renderDefineStage($('stage-content')); });
     }
 
     function renderCollectStage(container) {
