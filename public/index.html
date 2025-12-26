@@ -399,6 +399,21 @@
     // Constants + state
     // ----------------------------
 
+    // Lightweight application namespace to reduce global coupling.
+    // This is an indirection layer only (no behaviour change by itself).
+    const App = {};
+    App.Const = {};
+    App.Dom = {};
+    App.Ui = {};
+    App.State = {};
+    App.Persistence = {};
+    App.Gemini = {};
+    App.Csv = {};
+    App.Cleaning = {};
+    App.Stages = {};
+    App.Render = {};
+    App.Router = {};
+
     const STORAGE_KEY = 'dslcMentorSession.v1';
     const MAX_CSV_BYTES_FOR_STORAGE = 4.5 * 1024 * 1024; // localStorage is limited; stay safely under typical 5MB.
 
@@ -480,6 +495,13 @@
     };
 
     let state = structuredClone(DEFAULT_STATE);
+
+    // App constant/state references (kept in sync via getters because `state` is reassigned during restore).
+    App.Const.STORAGE_KEY = STORAGE_KEY;
+    App.Const.MAX_CSV_BYTES_FOR_STORAGE = MAX_CSV_BYTES_FOR_STORAGE;
+    App.Const.STAGES = STAGES;
+    App.State.DEFAULT_STATE = DEFAULT_STATE;
+    App.State.get = () => state;
 
     // ----------------------------
     // DOM helpers
@@ -743,7 +765,7 @@
       return ['<cleaning_status>', log || '- (no cleaning log)', '</cleaning_status>'].join('\n');
     }
 
-    function buildProposalSynthesisSystemPrompt() {
+    function buildProposalSynthesisSystemPrompt({ state, stages }) {
       const parsed = state.collect?.parsed;
       const datasetContext = parsed ? summariseCsvForPrompt(parsed) : '<dataset_snapshot>(no CSV uploaded yet)</dataset_snapshot>';
       const cleaningContext = summariseCleaningForPrompt(state.clean?.cleaned);
@@ -859,7 +881,7 @@
       // Gemini-first, deterministic fallback.
       let text = '';
       try {
-        const systemPrompt = buildProposalSynthesisSystemPrompt();
+        const systemPrompt = buildProposalSynthesisSystemPrompt({ state, stages: STAGES });
         text = await callGeminiWithSystemPrompt({
           systemPrompt,
           userText: 'Write the one-page proposal now. If you detect missing or incorrect information, include a short "Fix before submission" section at the end.'
@@ -877,8 +899,8 @@
       return text;
     }
 
-    function buildSystemPrompt() {
-      const stage = STAGES[state.currentStageIndex];
+    function buildSystemPrompt({ state, stages, currentStageIndex }) {
+      const stage = stages[currentStageIndex];
       const stageKey = stage.key;
 
       const parsed = state.collect?.parsed;
@@ -929,7 +951,7 @@
         `<current_stage>${stage.name} (${stageKey})</current_stage>`,
       ];
 
-      const summaries = STAGES.map(s => {
+      const summaries = stages.map(s => {
         const note = (state.notes?.[s.key] || '').trim();
         if (!note) return null;
         return `${s.name} summary: ${note}`;
@@ -1028,7 +1050,7 @@
       }));
 
       const body = {
-        systemInstruction: { parts: [{ text: buildSystemPrompt() }] },
+        systemInstruction: { parts: [{ text: buildSystemPrompt({ state, stages: STAGES, currentStageIndex: state.currentStageIndex }) }] },
         contents
       };
 
@@ -1315,7 +1337,8 @@
       const duplicateRowIndices = [];
 
       for (let i = 0; i < rows.length; i++) {
-        const sig = fields.map(f => String(rows[i][f] || '')).join('|');
+        const rowVals = fields.map(f => String(rows[i][f] || ''));
+        const sig = JSON.stringify(rowVals);
         if (rowSignatures.has(sig)) {
           duplicateCount++;
           duplicateRowIndices.push(i);
@@ -1325,11 +1348,10 @@
       }
 
       // Whitespace issues: detect leading/trailing spaces in text columns
-      const textFields = fields.filter(f => !stats.overall.numericFields.includes(f));
       let whitespaceCount = 0;
       const whitespaceByCol = {};
 
-      for (const f of textFields) {
+      for (const f of fields) {
         let colCount = 0;
         for (let i = 0; i < rows.length; i++) {
           const v = rows[i][f];
@@ -1347,7 +1369,7 @@
       let inconsistentCapCount = 0;
       const capInconsistencyByCol = {};
 
-      for (const f of textFields) {
+      for (const f of fields) {
         const valueMap = new Map(); // lowercase -> Set of original values
         
         for (let i = 0; i < rows.length; i++) {
@@ -1385,8 +1407,7 @@
         whitespaceCount,
         whitespaceByCol,
         inconsistentCapCount,
-        capInconsistencyByCol,
-        textFields
+        capInconsistencyByCol
       };
     }
 
@@ -1403,8 +1424,8 @@
         means[f] = stats.columns[f].mean;
       }
 
-      // Work on a copy
-      let outRows = rows.map(r => ({ ...r }));
+      // Work on a copy, tracking original indices for consistent outlier removal
+      let outRows = rows.map((r, i) => ({ ...r, _originalIndex: i }));
 
       // Missing
       if (plan.missing === 'delete_rows') {
@@ -1434,11 +1455,8 @@
       // Outliers
       if (plan.outliers === 'remove') {
         const before = outRows.length;
-        // We must recompute outliers on the original rows index mapping.
-        // For simplicity: compute again on current outRows using updated stats.
-        const reParsed = { fields, rows: outRows, stats: computeColumnStats(fields, outRows) };
-        const reIssues = detectIssues(reParsed);
-        outRows = outRows.filter((_, idx) => !reIssues.outlierRowFlags[idx]);
+        // Use original outlier detection flags to ensure consistency with "Detect" phase
+        outRows = outRows.filter(r => !issues.outlierRowFlags[r._originalIndex]);
         const removed = before - outRows.length;
         log.push(`Outliers: removed ${removed} row(s) that contained at least one outlier (more than 3 standard deviations).`);
       } else if (plan.outliers === 'keep') {
@@ -1471,7 +1489,8 @@
         const uniqueRows = [];
         
         for (let i = 0; i < outRows.length; i++) {
-          const sig = fields.map(f => String(outRows[i][f] || '')).join('|');
+          const rowVals = fields.map(f => String(outRows[i][f] || ''));
+          const sig = JSON.stringify(rowVals);
           if (!seen.has(sig)) {
             seen.set(sig, true);
             uniqueRows.push(outRows[i]);
@@ -1488,7 +1507,7 @@
         let trimmedCount = 0;
         const trimmedCols = [];
         
-        for (const f of issues.textFields) {
+        for (const f of fields) {
           let colTrimmed = false;
           for (let i = 0; i < outRows.length; i++) {
             const v = outRows[i][f];
@@ -1515,7 +1534,7 @@
         let changedCount = 0;
         const changedCols = [];
         
-        for (const f of issues.textFields) {
+        for (const f of fields) {
           let colChanged = false;
           for (let i = 0; i < outRows.length; i++) {
             const v = outRows[i][f];
@@ -1553,8 +1572,12 @@
           if (!isMissing(v)) uniques.add(String(v).trim());
         }
         
-        // Sort alphabetically to be deterministic
-        const sorted = Array.from(uniques).sort();
+        // Sort alphabetically or numerically to be deterministic and logical
+        const sorted = Array.from(uniques).sort((a, b) => {
+          const na = Number(a), nb = Number(b);
+          if (!isNaN(na) && !isNaN(nb)) return na - nb;
+          return a.localeCompare(b);
+        });
         const mapping = {};
         sorted.forEach((val, idx) => mapping[val] = idx);
         
@@ -1574,6 +1597,9 @@
         const mapStr = sorted.slice(0, 5).map((v, i) => `"${v}"→${i}`).join(', ') + (sorted.length > 5 ? '...' : '');
         log.push(`Label Encoding: converted column "${col}" to numbers. Mapping: ${mapStr}`);
       }
+
+      // Clean up internal props
+      outRows.forEach(r => delete r._originalIndex);
 
       return {
         fields,
@@ -1661,31 +1687,60 @@
       return idx <= state.currentStageIndex;
     }
 
+    // Single stage registry to reduce synchronisation points.
+    // Each entry wraps existing behaviour.
+    App.Stages.registry = {
+      define: {
+        // Phase 3 migration: Define uses a view ({ html, bind }) to make event wiring explicit.
+        render: renderDefineStage,
+        getView: getDefineStageView,
+        canAdvance: () => (App.State.get().define.problemStatement || '').trim().length > 0 && (App.State.get().define.successMeasure || '').trim().length > 0
+      },
+      collect: {
+        // Phase 3 migration: Collect uses a view ({ html, bind }) to make event wiring explicit.
+        render: renderCollectStage,
+        getView: getCollectStageView,
+        canAdvance: () => {
+          const plan = App.State.get().collect.plan || {};
+          // All fields are optional. Advance once the student has saved any plan content.
+          return (
+            (plan.requiredFeatures || '').trim().length > 0 ||
+            (plan.labelColumn || '').trim().length > 0 ||
+            (plan.labelingCriteria || '').trim().length > 0 ||
+            (plan.contextToRecord || '').trim().length > 0
+          );
+        }
+      },
+      clean: {
+        // Phase 3 migration: Clean uses a view ({ html, bind }) to make event wiring explicit.
+        render: renderCleanStage,
+        getView: getCleanStageView,
+        canAdvance: () => !!App.State.get().clean.cleaned && App.State.get().clean.downloaded === true
+      },
+      train: {
+        // Phase 3 migration: Train uses a view ({ html, bind }) to make event wiring explicit.
+        render: renderTrainStage,
+        getView: getTrainStageView,
+        canAdvance: () => (App.State.get().train.problemType || '').trim().length > 0
+      },
+      deploy: {
+        // Phase 3 migration: Deploy uses a view ({ html, bind }) to make event wiring explicit.
+        render: renderDeployStage,
+        getView: getDeployStageView,
+        canAdvance: () => (App.State.get().proposal.text || '').trim().length > 0
+      }
+    };
+
+    App.Stages.getEntry = (key) => {
+      const entry = App.Stages.registry?.[key];
+      return entry && typeof entry === 'object' ? entry : null;
+    };
+
     function canAdvance() {
       const key = STAGES[state.currentStageIndex].key;
-      if (key === 'define') {
-        return (state.define.problemStatement || '').trim().length > 0 && (state.define.successMeasure || '').trim().length > 0;
-      }
-      if (key === 'collect') {
-        const plan = state.collect.plan || {};
-        // All fields are now optional - just check if user has saved something
-        const hasAnyContent = 
-          (plan.requiredFeatures || '').trim().length > 0 ||
-          (plan.labelColumn || '').trim().length > 0 ||
-          (plan.labelingCriteria || '').trim().length > 0 ||
-          (plan.contextToRecord || '').trim().length > 0;
-        return hasAnyContent;
-      }
-      if (key === 'clean') {
-        return !!state.clean.cleaned && state.clean.downloaded === true;
-      }
-      if (key === 'train') {
-        return (state.train.problemType || '').trim().length > 0;
-      }
-      if (key === 'deploy') {
-        return (state.proposal.text || '').trim().length > 0;
-      }
-      return false;
+      const entry = App.Stages.getEntry(key);
+      if (!entry || typeof entry.canAdvance !== 'function') return false;
+      return !!entry.canAdvance();
     }
 
     function markCompletedIfReady() {
@@ -1796,39 +1851,45 @@
     }
 
     function renderDefineStage(container) {
+      const view = getDefineStageView();
+      container.innerHTML = view.html;
+      view.bind(container);
+    }
+
+    function getDefineStageView() {
       const os = escapeHtml(state.define.opportunityStatement || '');
       const dt = escapeHtml(state.define.designThinkingProblemStatement || '');
       const ps = escapeHtml(state.define.problemStatement);
       const sm = escapeHtml(state.define.successMeasure);
-      
+
       const focus = getDefineSegmentFocus();
       const opportunityHighlight = focus === 'opportunity' ? 'segment-highlight' : '';
       const designThinkingHighlight = focus === 'design-thinking' ? 'segment-highlight' : '';
       const problemHighlight = focus === 'problem' ? 'segment-highlight' : '';
       const successHighlight = focus === 'success' ? 'segment-highlight' : '';
 
-      container.innerHTML = `
+      const html = `
         <section class="space-y-3">
-          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${opportunityHighlight}">
+          <div data-define-segment="opportunity" class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${opportunityHighlight}">
             <h3 class="font-bold text-slate-800">Opportunity Statement</h3>
             <p class="text-sm text-slate-600 mt-1">Who is facing what problem?</p>
             <textarea id="define-opportunity" class="mt-3 w-full min-h-[80px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="[Person] is a [Role] who faces the problem of [What].">${os}</textarea>
           </div>
 
-          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${designThinkingHighlight}">
+          <div data-define-segment="design-thinking" class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${designThinkingHighlight}">
             <h3 class="font-bold text-slate-800">Design Thinking Problem Statement</h3>
             <p class="text-sm text-slate-600 mt-1">The root cause analysis (5 Whys).</p>
             <textarea id="define-design-thinking" class="mt-3 w-full min-h-[110px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="[Person], a [Characteristic], faces the problem of [what] at [where] during [when] through [how] because [root cause].">${dt}</textarea>
           </div>
 
-          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${problemHighlight}">
+          <div data-define-segment="problem" class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${problemHighlight}">
             <h3 class="font-bold text-slate-800">Data-Driven Problem Statement</h3>
             <p class="text-sm text-slate-600 mt-1">Translate your human problem into a specific question for the computer.</p>
             <textarea id="define-problem" class="mt-3 w-full min-h-[110px] bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Can we [classify/predict/detect] [target] using [data] to determine [outcome]?">${ps}</textarea>
             <div class="mt-2 text-sm text-[var(--color-text-muted)]">Tip: Use the chat to help you translate your problem.</div>
           </div>
 
-          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${successHighlight}">
+          <div data-define-segment="success" class="bg-slate-50 border border-slate-200 rounded-lg p-4 ${successHighlight}">
             <h3 class="font-bold text-slate-800">Success measure</h3>
             <p class="text-sm text-slate-600 mt-1">Define a clear “we succeeded if…” check.</p>
             <input id="define-success" class="mt-3 w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-200" placeholder="Example: Detect slips within 2 seconds with at least 85% accuracy" value="${sm}" />
@@ -1841,43 +1902,92 @@
         </section>
       `;
 
-      $('define-save').onclick = () => {
-        state.define.opportunityStatement = $('define-opportunity').value.trim();
-        state.define.designThinkingProblemStatement = $('define-design-thinking').value.trim();
-        state.define.problemStatement = $('define-problem').value.trim();
-        state.define.successMeasure = $('define-success').value.trim();
+      const bind = (container) => {
+        const syncHighlight = () => {
+          const focus = getDefineSegmentFocus();
+          ['opportunity', 'design-thinking', 'problem', 'success'].forEach((key) => {
+            const el = container.querySelector(`[data-define-segment="${key}"]`);
+            if (!el) return;
+            el.classList.toggle('segment-highlight', focus === key);
+          });
+        };
 
-        if (!state.define.problemStatement || !state.define.successMeasure) {
-          $('define-status').textContent = 'Please fill in Data-Driven Problem and Success Measure.';
-          $('define-status').className = 'text-sm text-rose-700';
-          return;
-        }
+        $('define-save').onclick = () => {
+          state.define.opportunityStatement = $('define-opportunity').value.trim();
+          state.define.designThinkingProblemStatement = $('define-design-thinking').value.trim();
+          state.define.problemStatement = $('define-problem').value.trim();
+          state.define.successMeasure = $('define-success').value.trim();
 
-        $('define-status').textContent = 'Saved.';
-        $('define-status').className = 'text-sm text-emerald-700';
+          syncHighlight();
 
-        // Helpful default notes
-        if (!(state.notes.define || '').trim()) {
-          state.notes.define = `Problem: ${state.define.problemStatement}\nSuccess: ${state.define.successMeasure}`;
-        }
+          if (!state.define.problemStatement || !state.define.successMeasure) {
+            $('define-status').textContent = 'Please fill in Data-Driven Problem and Success Measure.';
+            $('define-status').className = 'text-sm text-rose-700';
+            renderStageHeader();
+            return;
+          }
+
+          $('define-status').textContent = 'Saved.';
+          $('define-status').className = 'text-sm text-emerald-700';
+
+          // Helpful default notes
+          if (!(state.notes.define || '').trim()) {
+            state.notes.define = `Problem: ${state.define.problemStatement}\nSuccess: ${state.define.successMeasure}`;
+          }
+
+          markCompletedIfReady();
+          persistDebounced();
+          renderAll();
+        };
+
+        // Live gating
+        // Avoid full stage re-render on every keystroke (cursor stability, fewer event rebinds).
+        // Update header only when it affects gating.
+        $('define-opportunity').addEventListener('input', () => {
+          state.define.opportunityStatement = $('define-opportunity').value;
+          persistDebounced();
+          syncHighlight();
+        });
+        $('define-design-thinking').addEventListener('input', () => {
+          state.define.designThinkingProblemStatement = $('define-design-thinking').value;
+          persistDebounced();
+          syncHighlight();
+        });
+        $('define-problem').addEventListener('input', () => {
+          state.define.problemStatement = $('define-problem').value;
+          markCompletedIfReady();
+          persistDebounced();
+          renderStageHeader();
+          syncHighlight();
+        });
+        $('define-success').addEventListener('input', () => {
+          state.define.successMeasure = $('define-success').value;
+          markCompletedIfReady();
+          persistDebounced();
+          renderStageHeader();
+          syncHighlight();
+        });
+
+        // Ensure highlight is correct after first bind.
+        syncHighlight();
 
         markCompletedIfReady();
-        persistDebounced();
-        renderAll();
       };
 
-      // Live gating
-      $('define-opportunity').addEventListener('input', () => { state.define.opportunityStatement = $('define-opportunity').value; persistDebounced(); renderDefineStage($('stage-content')); });
-      $('define-design-thinking').addEventListener('input', () => { state.define.designThinkingProblemStatement = $('define-design-thinking').value; persistDebounced(); renderDefineStage($('stage-content')); });
-      $('define-problem').addEventListener('input', () => { state.define.problemStatement = $('define-problem').value; markCompletedIfReady(); persistDebounced(); renderStageHeader(); renderDefineStage($('stage-content')); });
-      $('define-success').addEventListener('input', () => { state.define.successMeasure = $('define-success').value; markCompletedIfReady(); persistDebounced(); renderStageHeader(); renderDefineStage($('stage-content')); });
+      return { html, bind };
     }
 
     function renderCollectStage(container) {
+      const view = getCollectStageView();
+      container.innerHTML = view.html;
+      view.bind(container);
+    }
+
+    function getCollectStageView() {
       const parsed = state.collect.parsed;
       const plan = state.collect.plan || {};
       const validation = state.collect.validation || {};
-      
+
       // Section 1: Reference from Define
       const defineRef = `
         <div class="bg-blue-50 border-2 border-blue-200 rounded-xl p-4 mb-6">
@@ -2095,85 +2205,89 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
       // Section 4: Completion
       const completionSection = buildCompletionSection(plan, validation);
 
-      container.innerHTML = defineRef + planSection + uploadSection + completionSection;
+      const html = defineRef + planSection + uploadSection + completionSection;
 
-      // Wire up plan form inputs
-      const planInputs = [
-        { id: 'plan-features', field: 'requiredFeatures' },
-        { id: 'plan-label-column', field: 'labelColumn' },
-        { id: 'plan-labeling-criteria', field: 'labelingCriteria' },
-        { id: 'plan-context', field: 'contextToRecord' },
-        { id: 'plan-period', field: 'collectionPeriod' },
-        { id: 'plan-location', field: 'collectionLocation' },
-        { id: 'plan-device', field: 'deviceInfo' }
-      ];
+      const bind = () => {
+        // Wire up plan form inputs
+        const planInputs = [
+          { id: 'plan-features', field: 'requiredFeatures' },
+          { id: 'plan-label-column', field: 'labelColumn' },
+          { id: 'plan-labeling-criteria', field: 'labelingCriteria' },
+          { id: 'plan-context', field: 'contextToRecord' },
+          { id: 'plan-period', field: 'collectionPeriod' },
+          { id: 'plan-location', field: 'collectionLocation' },
+          { id: 'plan-device', field: 'deviceInfo' }
+        ];
 
-      planInputs.forEach(({ id, field }) => {
-        const el = $(id);
-        if (el) {
-          el.addEventListener('input', () => {
-            state.collect.plan[field] = el.value;
-            persistDebounced();
-            renderStageHeader(); // Update next button
-          });
+        planInputs.forEach(({ id, field }) => {
+          const el = $(id);
+          if (el) {
+            el.addEventListener('input', () => {
+              state.collect.plan[field] = el.value;
+              persistDebounced();
+              renderStageHeader(); // Update next button
+            });
+          }
+        });
+
+        // Help button for labeling criteria
+        const labelHelpBtn = $('label-help-btn');
+        const labelHelp = $('label-help');
+        if (labelHelpBtn && labelHelp) {
+          labelHelpBtn.onclick = (e) => {
+            e.preventDefault();
+            labelHelp.classList.toggle('hidden');
+            // Update icon
+            const icon = labelHelpBtn.querySelector('i');
+            if (icon) {
+              icon.setAttribute('data-lucide', labelHelp.classList.contains('hidden') ? 'help-circle' : 'x-circle');
+              if (window.lucide?.createIcons) window.lucide.createIcons();
+            }
+          };
         }
-      });
 
-      // Help button for labeling criteria
-      const labelHelpBtn = $('label-help-btn');
-      const labelHelp = $('label-help');
-      if (labelHelpBtn && labelHelp) {
-        labelHelpBtn.onclick = (e) => {
-          e.preventDefault();
-          labelHelp.classList.toggle('hidden');
-          // Update icon
-          const icon = labelHelpBtn.querySelector('i');
-          if (icon) {
-            icon.setAttribute('data-lucide', labelHelp.classList.contains('hidden') ? 'help-circle' : 'x-circle');
-            if (window.lucide?.createIcons) window.lucide.createIcons();
-          }
-        };
-      }
-
-      // Save plan button
-      const savePlanBtn = $('save-plan');
-      if (savePlanBtn) {
-        savePlanBtn.onclick = () => {
-          // All fields are now optional - just save whatever the user has entered
-          
-          // Enhanced auto-generate notes if empty
-          if (!(state.notes.collect || '').trim()) {
-            const plan = state.collect.plan;
-            const notesLines = [];
-            if (plan.labelColumn) notesLines.push(`Target: ${plan.labelColumn}`);
-            if (plan.labelingCriteria) {
-              notesLines.push(`Labeling: ${(plan.labelingCriteria || '').substring(0, 120)}${(plan.labelingCriteria || '').length > 120 ? '...' : ''}`);
+        // Save plan button
+        const savePlanBtn = $('save-plan');
+        if (savePlanBtn) {
+          savePlanBtn.onclick = () => {
+            // Enhanced auto-generate notes if empty
+            if (!(state.notes.collect || '').trim()) {
+              const plan = state.collect.plan;
+              const notesLines = [];
+              if (plan.labelColumn) notesLines.push(`Target: ${plan.labelColumn}`);
+              if (plan.labelingCriteria) {
+                notesLines.push(`Labeling: ${(plan.labelingCriteria || '').substring(0, 120)}${(plan.labelingCriteria || '').length > 120 ? '...' : ''}`);
+              }
+              if (plan.collectionPeriod) notesLines.push(`When: ${plan.collectionPeriod}`);
+              if (plan.collectionLocation) notesLines.push(`Where: ${plan.collectionLocation}`);
+              if (state.collect.csvFileName) notesLines.push(`File: ${state.collect.csvFileName}`);
+              if (notesLines.length > 0) {
+                state.notes.collect = notesLines.join('\n');
+              }
             }
-            if (plan.collectionPeriod) notesLines.push(`When: ${plan.collectionPeriod}`);
-            if (plan.collectionLocation) notesLines.push(`Where: ${plan.collectionLocation}`);
-            if (state.collect.csvFileName) notesLines.push(`File: ${state.collect.csvFileName}`);
-            if (notesLines.length > 0) {
-              state.notes.collect = notesLines.join('\n');
-            }
-          }
 
-          $('plan-status').textContent = 'Plan saved';
-          $('plan-status').className = 'text-sm text-emerald-700';
-          
-          markCompletedIfReady();
-          persistDebounced();
-          renderStageHeader();
-          
-          setTimeout(() => {
-            if ($('plan-status')) {
-              $('plan-status').textContent = '';
-            }
-          }, 3000);
-        };
-      }
+            $('plan-status').textContent = 'Plan saved';
+            $('plan-status').className = 'text-sm text-emerald-700';
 
-      // Wire up CSV upload
-      wireUpCsvUpload();
+            markCompletedIfReady();
+            persistDebounced();
+            renderStageHeader();
+
+            setTimeout(() => {
+              if ($('plan-status')) {
+                $('plan-status').textContent = '';
+              }
+            }, 3000);
+          };
+        }
+
+        // Wire up CSV upload
+        wireUpCsvUpload();
+
+        markCompletedIfReady();
+      };
+
+      return { html, bind };
     }
 
     function buildValidationResults(parsed, plan, validation) {
@@ -2618,15 +2732,26 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
     }
 
     function renderCleanStage(container) {
+      const view = getCleanStageView();
+      container.innerHTML = view.html;
+      view.bind(container);
+    }
+
+    function getCleanStageView() {
       const parsed = state.collect.parsed;
       if (!parsed) {
-        container.innerHTML = `
+        const html = `
           <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-amber-800 text-sm">
             Upload a CSV in Collect before you can clean it.
           </div>
         `;
-        setStageAlert('This stage is locked until you upload a CSV in Collect.');
-        return;
+
+        const bind = () => {
+          setStageAlert('This stage is locked until you upload a CSV in Collect.');
+          markCompletedIfReady();
+        };
+
+        return { html, bind };
       }
 
       const issues = detectIssues(parsed);
@@ -2639,7 +2764,7 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
       const fields = parsed.fields;
       const labelColOptions = [''].concat(fields);
 
-      container.innerHTML = `
+      const html = `
       <div class="space-y-4">
 
         <div class="bg-white border border-slate-200 rounded-lg p-4">
@@ -2802,146 +2927,160 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
       </div>
       `;
 
-      // Wire choices
-      container.querySelectorAll('.clean-choice').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-          const el = e.currentTarget;
-          const missing = el.getAttribute('data-missing');
-          const outliers = el.getAttribute('data-outliers');
-          const duplicates = el.getAttribute('data-duplicates');
-          const whitespace = el.getAttribute('data-whitespace');
-          const capitalization = el.getAttribute('data-capitalization');
-          const encoding = el.getAttribute('data-encoding');
+      const bind = (container) => {
+        // Wire choices
+        container.querySelectorAll('.clean-choice').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            const el = e.currentTarget;
+            const missing = el.getAttribute('data-missing');
+            const outliers = el.getAttribute('data-outliers');
+            const duplicates = el.getAttribute('data-duplicates');
+            const whitespace = el.getAttribute('data-whitespace');
+            const capitalization = el.getAttribute('data-capitalization');
+            const encoding = el.getAttribute('data-encoding');
 
-          if (missing) state.clean.plan.missing = missing;
-          if (outliers) state.clean.plan.outliers = outliers;
-          if (duplicates) state.clean.plan.duplicates = duplicates;
-          if (whitespace) state.clean.plan.whitespace = whitespace;
-          if (capitalization) state.clean.plan.capitalization = capitalization;
-          if (encoding) state.clean.plan.labelEncoding = encoding;
+            if (missing) state.clean.plan.missing = missing;
+            if (outliers) state.clean.plan.outliers = outliers;
+            if (duplicates) state.clean.plan.duplicates = duplicates;
+            if (whitespace) state.clean.plan.whitespace = whitespace;
+            if (capitalization) state.clean.plan.capitalization = capitalization;
+            if (encoding) state.clean.plan.labelEncoding = encoding;
 
-          persistDebounced();
-          renderAll();
+            persistDebounced();
+            renderAll();
+          });
         });
-      });
 
-      $('label-col').addEventListener('change', (e) => {
-        state.clean.plan.labelColumn = e.target.value;
-        persistDebounced();
-      });
-
-      $('apply-cleaning').onclick = () => {
-        const plan = state.clean.plan;
-        const issues = detectIssues(parsed);
-
-        // Only require decisions for detected issues
-        const missingTotal = Object.values(issues.missingByCol).reduce((a, b) => a + b, 0);
-        const outlierTotal = Object.values(issues.outlierCountsByCol).reduce((a, b) => a + b, 0);
-        const duplicateCount = issues.duplicateCount || 0;
-        const whitespaceCount = issues.whitespaceCount || 0;
-
-        // Validate required choices
-        if (missingTotal > 0 && !plan.missing) {
-          $('clean-status').textContent = 'Choose how to handle missing values.';
-          $('clean-status').className = 'text-sm text-rose-700';
-          return;
-        }
-        if (outlierTotal > 0 && !plan.outliers) {
-          $('clean-status').textContent = 'Choose how to handle outliers.';
-          $('clean-status').className = 'text-sm text-rose-700';
-          return;
-        }
-        if (duplicateCount > 0 && !plan.duplicates) {
-          $('clean-status').textContent = 'Choose how to handle duplicate rows.';
-          $('clean-status').className = 'text-sm text-rose-700';
-          return;
-        }
-        if (whitespaceCount > 0 && !plan.whitespace) {
-          $('clean-status').textContent = 'Choose how to handle whitespace.';
-          $('clean-status').className = 'text-sm text-rose-700';
-          return;
+        const labelCol = $('label-col');
+        if (labelCol) {
+          labelCol.addEventListener('change', (e) => {
+            state.clean.plan.labelColumn = e.target.value;
+            persistDebounced();
+          });
         }
 
-        // Optional fields can be null - set defaults
-        if (!plan.capitalization) plan.capitalization = 'keep';
-        if (!plan.labelEncoding) plan.labelEncoding = 'none';
-        if (!plan.labelColumn) plan.labelColumn = state.collect.plan.labelColumn || '';
+        const applyBtn = $('apply-cleaning');
+        if (applyBtn) {
+          applyBtn.onclick = () => {
+            const plan = state.clean.plan;
+            const issues = detectIssues(parsed);
 
-        // If no issues detected, still allow cleaning with optional settings
-        if (missingTotal === 0) plan.missing = null;
-        if (outlierTotal === 0) plan.outliers = null;
-        if (duplicateCount === 0) plan.duplicates = null;
-        if (whitespaceCount === 0) plan.whitespace = null;
+            // Only require decisions for detected issues
+            const missingTotal = Object.values(issues.missingByCol).reduce((a, b) => a + b, 0);
+            const outlierTotal = Object.values(issues.outlierCountsByCol).reduce((a, b) => a + b, 0);
+            const duplicateCount = issues.duplicateCount || 0;
+            const whitespaceCount = issues.whitespaceCount || 0;
 
-        // If label standardise is chosen, label column must be set.
-        if (plan.labelStandardise === 'lower_trim' && !plan.labelColumn) {
-          $('clean-status').textContent = 'Pick a label column or choose “Do not change”.';
-          $('clean-status').className = 'text-sm text-rose-700';
-          return;
+            // Validate required choices
+            if (missingTotal > 0 && !plan.missing) {
+              $('clean-status').textContent = 'Choose how to handle missing values.';
+              $('clean-status').className = 'text-sm text-rose-700';
+              return;
+            }
+            if (outlierTotal > 0 && !plan.outliers) {
+              $('clean-status').textContent = 'Choose how to handle outliers.';
+              $('clean-status').className = 'text-sm text-rose-700';
+              return;
+            }
+            if (duplicateCount > 0 && !plan.duplicates) {
+              $('clean-status').textContent = 'Choose how to handle duplicate rows.';
+              $('clean-status').className = 'text-sm text-rose-700';
+              return;
+            }
+            if (whitespaceCount > 0 && !plan.whitespace) {
+              $('clean-status').textContent = 'Choose how to handle whitespace.';
+              $('clean-status').className = 'text-sm text-rose-700';
+              return;
+            }
+
+            // Optional fields can be null - set defaults
+            if (!plan.capitalization) plan.capitalization = 'keep';
+            if (!plan.labelEncoding) plan.labelEncoding = 'none';
+            if (!plan.labelColumn) plan.labelColumn = state.collect.plan.labelColumn || '';
+
+            // If no issues detected, still allow cleaning with optional settings
+            if (missingTotal === 0) plan.missing = null;
+            if (outlierTotal === 0) plan.outliers = null;
+            if (duplicateCount === 0) plan.duplicates = null;
+            if (whitespaceCount === 0) plan.whitespace = null;
+
+            // If label standardise is chosen, label column must be set.
+            if (plan.labelStandardise === 'lower_trim' && !plan.labelColumn) {
+              $('clean-status').textContent = 'Pick a label column or choose “Do not change”.';
+              $('clean-status').className = 'text-sm text-rose-700';
+              return;
+            }
+
+            const cleaned = applyCleaning(parsed, plan);
+            state.clean.cleaned = cleaned;
+            state.clean.downloaded = false;
+
+            // Helpful notes
+            if (!(state.notes.clean || '').trim()) {
+              state.notes.clean = cleaned.log.join('\n');
+            }
+
+            $('clean-status').textContent = 'Cleaning applied. Review the preview, then download.';
+            $('clean-status').className = 'text-sm text-emerald-700';
+
+            persistDebounced();
+            renderAll();
+
+            // Mentor question
+            pushMessage('assistant', 'Before you download: does the cleaned preview still represent the real-world situation you care about?');
+          };
         }
 
-        const cleaned = applyCleaning(parsed, plan);
-        state.clean.cleaned = cleaned;
-        state.clean.downloaded = false;
-
-        // Helpful notes
-        if (!(state.notes.clean || '').trim()) {
-          state.notes.clean = cleaned.log.join('\n');
+        const downloadBtn = $('download-cleaned');
+        if (downloadBtn) {
+          downloadBtn.disabled = !state.clean.cleaned;
+          downloadBtn.onclick = () => {
+            if (!state.clean.cleaned) return;
+            const { fields, rows } = state.clean.cleaned;
+            const csv = Papa.unparse(rows, { columns: fields });
+            const base = (state.collect.csvFileName || 'dataset.csv').replace(/[^a-zA-Z0-9_.-]/g, '_');
+            downloadFile(csv, 'cleaned_' + base, 'text/csv;charset=utf-8');
+            state.clean.downloaded = true;
+            markCompletedIfReady();
+            persistDebounced();
+            renderAll();
+            toast('Cleaned CSV downloaded');
+          };
         }
 
-        $('clean-status').textContent = 'Cleaning applied. Review the preview, then download.';
-        $('clean-status').className = 'text-sm text-emerald-700';
+        // Preview
+        const preview = $('clean-preview');
+        if (preview) {
+          if (state.clean.cleaned) {
+            const c = state.clean.cleaned;
+            const logHtml = `
+              <div class="bg-white border border-slate-200 rounded-lg p-4">
+                <h3 class="font-bold text-slate-800">Cleaning log</h3>
+                <ul class="mt-2 text-sm text-slate-700 list-disc list-inside space-y-1">
+                  ${c.log.map(x => `<li>${escapeHtml(x)}</li>`).join('')}
+                </ul>
+              </div>
+            `;
 
-        persistDebounced();
-        renderAll();
+            const previewHtml = `
+              <div class="bg-white border border-slate-200 rounded-lg p-4">
+                <h3 class="font-bold text-slate-800">Cleaned preview</h3>
+                <p class="text-sm text-slate-600 mt-1">Highlights: yellow = filled, green = label standardised, red = outlier value.</p>
+                <div class="mt-3">${buildCsvPreviewTable(c.fields, c.rows, c.annotations, 12)}</div>
+              </div>
+            `;
 
-        // Mentor question
-        pushMessage('assistant', 'Before you download: does the cleaned preview still represent the real-world situation you care about?');
-      };
+            preview.innerHTML = logHtml + previewHtml;
+          } else {
+            preview.innerHTML = '';
+          }
+        }
 
-      const downloadBtn = $('download-cleaned');
-      downloadBtn.disabled = !state.clean.cleaned;
-      downloadBtn.onclick = () => {
-        if (!state.clean.cleaned) return;
-        const { fields, rows } = state.clean.cleaned;
-        const csv = Papa.unparse(rows, { columns: fields });
-        const base = (state.collect.csvFileName || 'dataset.csv').replace(/[^a-zA-Z0-9_.-]/g, '_');
-        downloadFile(csv, 'cleaned_' + base, 'text/csv;charset=utf-8');
-        state.clean.downloaded = true;
+        // Gate
         markCompletedIfReady();
-        persistDebounced();
-        renderAll();
-        toast('Cleaned CSV downloaded');
       };
 
-      // Preview
-      const preview = $('clean-preview');
-      if (state.clean.cleaned) {
-        const c = state.clean.cleaned;
-        const logHtml = `
-          <div class="bg-white border border-slate-200 rounded-lg p-4">
-            <h3 class="font-bold text-slate-800">Cleaning log</h3>
-            <ul class="mt-2 text-sm text-slate-700 list-disc list-inside space-y-1">
-              ${c.log.map(x => `<li>${escapeHtml(x)}</li>`).join('')}
-            </ul>
-          </div>
-        `;
-
-        const previewHtml = `
-          <div class="bg-white border border-slate-200 rounded-lg p-4">
-            <h3 class="font-bold text-slate-800">Cleaned preview</h3>
-            <p class="text-sm text-slate-600 mt-1">Highlights: yellow = filled, green = label standardised, red = outlier value.</p>
-            <div class="mt-3">${buildCsvPreviewTable(c.fields, c.rows, c.annotations, 12)}</div>
-          </div>
-        `;
-
-        preview.innerHTML = logHtml + previewHtml;
-      } else {
-        preview.innerHTML = '';
-      }
-
-      // Gate
-      markCompletedIfReady();
+      return { html, bind };
     }
 
     function recommendWidgets(problemType) {
@@ -2986,23 +3125,31 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
     }
 
     function renderTrainStage(container) {
+      const view = getTrainStageView();
+      container.innerHTML = view.html;
+      view.bind(container);
+    }
+
+    function getTrainStageView() {
       if (!state.clean.cleaned) {
-        container.innerHTML = `
+        const html = `
           <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-amber-800 text-sm">
             Apply cleaning and download your cleaned CSV before training.
           </div>
         `;
-        setStageAlert('This stage is locked until you complete Clean (apply cleaning and download cleaned data).');
-        return;
+
+        const bind = () => {
+          setStageAlert('This stage is locked until you complete Clean (apply cleaning and download cleaned data).');
+          markCompletedIfReady();
+        };
+
+        return { html, bind };
       }
 
       const problemType = state.train.problemType;
-      const target = escapeHtml(state.train.targetColumn || '');
       const result = escapeHtml(state.train.studentResult || '');
 
-      const rec = state.train.recommended || [];
-
-      container.innerHTML = `
+      const html = `
         <div class="space-y-4">
 
           <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
@@ -3042,91 +3189,114 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
         </div>
       `;
 
-      container.querySelectorAll('.ptype').forEach(btn => {
-        btn.addEventListener('click', () => {
-          state.train.problemType = btn.getAttribute('data-ptype');
-          state.train.recommended = recommendWidgets(state.train.problemType);
-          persistDebounced();
-          renderAll();
-          pushMessage('assistant', 'Good. What is one example of an input reading, and what output label/number should the model produce?');
-        });
-      });
-
-      $('target-col').addEventListener('change', (e) => {
-        state.train.targetColumn = e.target.value;
-        persistDebounced();
-      });
-
-      const recEl = $('recommendations');
-      if (state.train.problemType) {
-        const items = state.train.recommended || [];
-        recEl.innerHTML = `
-          <div class="bg-white border border-slate-200 rounded-lg p-4">
-            <h3 class="font-bold text-slate-800">Recommended widget(s)</h3>
-            <p class="text-sm text-slate-600 mt-1">Open one widget and upload your cleaned CSV there.</p>
-            <div class="mt-3 space-y-3">
-              ${items.map(w => `
-                <div class="border border-slate-200 rounded-lg p-3 bg-slate-50">
-                  <div class="flex items-start justify-between gap-3">
-                    <div>
-                      <div class="font-bold text-slate-800">${escapeHtml(w.name)}</div>
-                      <div class="text-sm text-slate-600 mt-1">${escapeHtml(w.whenToUse)}</div>
+      const bind = (container) => {
+        const recEl = $('recommendations');
+        const renderRecommendations = () => {
+          if (!recEl) return;
+          if (state.train.problemType) {
+            const items = state.train.recommended || [];
+            recEl.innerHTML = `
+              <div class="bg-white border border-slate-200 rounded-lg p-4">
+                <h3 class="font-bold text-slate-800">Recommended widget(s)</h3>
+                <p class="text-sm text-slate-600 mt-1">Open one widget and upload your cleaned CSV there.</p>
+                <div class="mt-3 space-y-3">
+                  ${items.map(w => `
+                    <div class="border border-slate-200 rounded-lg p-3 bg-slate-50">
+                      <div class="flex items-start justify-between gap-3">
+                        <div>
+                          <div class="font-bold text-slate-800">${escapeHtml(w.name)}</div>
+                          <div class="text-sm text-slate-600 mt-1">${escapeHtml(w.whenToUse)}</div>
+                        </div>
+                        <a href="${escapeHtml(w.path)}" target="_blank" rel="noopener" class="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold whitespace-nowrap">
+                          Open
+                        </a>
+                      </div>
                     </div>
-                    <a href="${escapeHtml(w.path)}" target="_blank" rel="noopener" class="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold whitespace-nowrap">
-                      Open
-                    </a>
-                  </div>
+                  `).join('')}
                 </div>
-              `).join('')}
-            </div>
-            <div class="mt-3 text-sm text-[var(--color-text-muted)]">After testing, come back and record your result. You will use it in the proposal.</div>
-          </div>
-        `;
-      } else {
-        recEl.innerHTML = `
-          <div class="bg-white border border-slate-200 rounded-lg p-4">
-            <h3 class="font-bold text-slate-800">Next step</h3>
-            <p class="text-sm text-slate-600 mt-1">Choose a problem type to see recommended widgets.</p>
-          </div>
-        `;
-      }
+                <div class="mt-3 text-sm text-[var(--color-text-muted)]">After testing, come back and record your result. You will use it in the proposal.</div>
+              </div>
+            `;
+          } else {
+            recEl.innerHTML = `
+              <div class="bg-white border border-slate-200 rounded-lg p-4">
+                <h3 class="font-bold text-slate-800">Next step</h3>
+                <p class="text-sm text-slate-600 mt-1">Choose a problem type to see recommended widgets.</p>
+              </div>
+            `;
+          }
+        };
 
-      $('train-save').onclick = () => {
-        state.train.studentResult = $('train-result').value.trim();
-        if (!state.train.problemType) {
-          $('train-status').textContent = 'Choose a problem type first.';
-          $('train-status').className = 'text-sm text-rose-700';
-          return;
+        container.querySelectorAll('.ptype').forEach(btn => {
+          btn.addEventListener('click', () => {
+            state.train.problemType = btn.getAttribute('data-ptype');
+            state.train.recommended = recommendWidgets(state.train.problemType);
+            persistDebounced();
+            renderAll();
+            pushMessage('assistant', 'Good. What is one example of an input reading, and what output label/number should the model produce?');
+          });
+        });
+
+        const targetCol = $('target-col');
+        if (targetCol) {
+          targetCol.addEventListener('change', (e) => {
+            state.train.targetColumn = e.target.value;
+            persistDebounced();
+          });
         }
 
-        // Helpful notes
-        if (!(state.notes.train || '').trim()) {
-          const t = state.train.targetColumn ? `Target: ${state.train.targetColumn}` : 'Target: (not set)';
-          const r = state.train.studentResult ? `Result: ${state.train.studentResult}` : 'Result: (not recorded)';
-          const w = (state.train.recommended || [])[0]?.name ? `Widget: ${(state.train.recommended || [])[0].name}` : 'Widget: (not set)';
-          state.notes.train = `${t}\n${w}\n${r}`;
+        const trainResult = $('train-result');
+        if (trainResult) {
+          trainResult.addEventListener('input', () => {
+            state.train.studentResult = trainResult.value;
+            persistDebounced();
+          });
         }
 
+        const saveBtn = $('train-save');
+        if (saveBtn) {
+          saveBtn.onclick = () => {
+            state.train.studentResult = ($('train-result')?.value || '').trim();
+            if (!state.train.problemType) {
+              $('train-status').textContent = 'Choose a problem type first.';
+              $('train-status').className = 'text-sm text-rose-700';
+              return;
+            }
+
+            // Helpful notes
+            if (!(state.notes.train || '').trim()) {
+              const t = state.train.targetColumn ? `Target: ${state.train.targetColumn}` : 'Target: (not set)';
+              const r = state.train.studentResult ? `Result: ${state.train.studentResult}` : 'Result: (not recorded)';
+              const w = (state.train.recommended || [])[0]?.name ? `Widget: ${(state.train.recommended || [])[0].name}` : 'Widget: (not set)';
+              state.notes.train = `${t}\n${w}\n${r}`;
+            }
+
+            markCompletedIfReady();
+            persistDebounced();
+            renderAll();
+
+            $('train-status').textContent = 'Saved.';
+            $('train-status').className = 'text-sm text-emerald-700';
+
+            pushMessage('assistant', 'What is one risk if the model is wrong, and how will you handle it safely?');
+          };
+        }
+
+        renderRecommendations();
         markCompletedIfReady();
-        persistDebounced();
-        renderAll();
-
-        $('train-status').textContent = 'Saved.';
-        $('train-status').className = 'text-sm text-emerald-700';
-
-        pushMessage('assistant', 'What is one risk if the model is wrong, and how will you handle it safely?');
       };
 
-      $('train-result').addEventListener('input', () => {
-        state.train.studentResult = $('train-result').value;
-        persistDebounced();
-      });
-
-      markCompletedIfReady();
+      return { html, bind };
     }
 
     function renderDeployStage(container) {
-      container.innerHTML = `
+      const view = getDeployStageView();
+      container.innerHTML = view.html;
+      view.bind(container);
+    }
+
+    function getDeployStageView() {
+      const html = `
         <div class="space-y-4">
 
           <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
@@ -3161,40 +3331,49 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
         </div>
       `;
 
-      const bind = (id, field) => {
-        $(id).addEventListener('input', () => {
-          state.deploy[field] = $(id).value;
-          persistDebounced();
-        });
-      };
+      const bind = () => {
+        const bindField = (id, field) => {
+          const el = $(id);
+          if (!el) return;
+          el.addEventListener('input', () => {
+            state.deploy[field] = el.value;
+            persistDebounced();
+          });
+        };
 
-      bind('deploy-context', 'usageContext');
-      bind('deploy-alert', 'alertPlan');
-      bind('deploy-risk', 'riskPlan');
-      bind('deploy-improve', 'improvementPlan');
+        bindField('deploy-context', 'usageContext');
+        bindField('deploy-alert', 'alertPlan');
+        bindField('deploy-risk', 'riskPlan');
+        bindField('deploy-improve', 'improvementPlan');
 
-      $('deploy-generate').onclick = async () => {
-        $('deploy-status').textContent = 'Generating proposal…';
-        $('deploy-status').className = 'text-sm text-slate-600';
+        const generateBtn = $('deploy-generate');
+        if (generateBtn) {
+          generateBtn.onclick = async () => {
+            $('deploy-status').textContent = 'Generating proposal…';
+            $('deploy-status').className = 'text-sm text-slate-600';
 
-        const text = await generateProposal();
+            await generateProposal();
 
-        // Notes
-        if (!(state.notes.deploy || '').trim()) {
-          state.notes.deploy = 'Deployment summary written. Proposal generated.';
+            // Notes
+            if (!(state.notes.deploy || '').trim()) {
+              state.notes.deploy = 'Deployment summary written. Proposal generated.';
+            }
+
+            markCompletedIfReady();
+            persistDebounced();
+            renderAll();
+
+            $('deploy-status').textContent = 'Proposal generated.';
+            $('deploy-status').className = 'text-sm text-emerald-700';
+
+            pushMessage('assistant', 'Before you submit: what is one thing you will test in the real world first?');
+          };
         }
 
         markCompletedIfReady();
-        persistDebounced();
-        renderAll();
-
-        $('deploy-status').textContent = 'Proposal generated.';
-        $('deploy-status').className = 'text-sm text-emerald-700';
-
-        pushMessage('assistant', 'Before you submit: what is one thing you will test in the real world first?');
       };
 
-      markCompletedIfReady();
+      return { html, bind };
     }
 
     function buildProposalText() {
@@ -3329,11 +3508,33 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
       const container = $('stage-content');
       const key = STAGES[state.currentStageIndex].key;
 
-      if (key === 'define') return renderDefineStage(container);
-      if (key === 'collect') return renderCollectStage(container);
-      if (key === 'clean') return renderCleanStage(container);
-      if (key === 'train') return renderTrainStage(container);
-      if (key === 'deploy') return renderDeployStage(container);
+      const entry = App.Stages.getEntry(key);
+      if (!entry || (typeof entry.render !== 'function' && typeof entry.getView !== 'function')) {
+        container.innerHTML = `
+          <div class="bg-rose-50 border border-rose-200 rounded-lg p-4 text-rose-800 text-sm">
+            Unknown stage: ${escapeHtml(key)}
+          </div>
+        `;
+        return;
+      }
+
+      if (typeof entry.getView === 'function') {
+        const view = entry.getView();
+        if (!view || typeof view.html !== 'string' || typeof view.bind !== 'function') {
+          container.innerHTML = `
+            <div class="bg-rose-50 border border-rose-200 rounded-lg p-4 text-rose-800 text-sm">
+              Stage view is invalid: ${escapeHtml(key)}
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = view.html;
+        view.bind(container);
+        return;
+      }
+
+      return entry.render(container);
     }
 
     // ----------------------------
