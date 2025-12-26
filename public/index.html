@@ -341,7 +341,7 @@
           </div>
 
           <div class="mt-4 space-y-2" id="stage-list"></div>
-          <p class="text-sm text-[var(--color-text-muted)] mt-4">Linear flow is enforced. Use “Loop back” if you need to fix an earlier stage.</p>
+          <p class="text-sm text-[var(--color-text-muted)] mt-4">Linear flow is enforced. Use “Back” if you need to fix an earlier stage.</p>
         </div>
 
         <div class="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -426,14 +426,37 @@
         csvFileName: '',
         csvText: '',
         parsed: null, // { fields: string[], rows: object[], stats: {...} }
-        csvTooLargeToPersist: false
+        csvTooLargeToPersist: false,
+        plan: {
+          requiredFeatures: '',
+          labelColumn: '',
+          labelingCriteria: '',
+          contextToRecord: '',
+          collectionPeriod: '',
+          collectionLocation: '',
+          deviceInfo: ''
+        },
+        validation: {
+          hasUpload: false,
+          labelColumnFound: false,
+          labelColumnActual: '',
+          labelUniqueCount: 0,
+          labelPreview: [],
+          labelDistribution: {},
+          suggestedIssues: [],
+          featuresLikelyFound: [],
+          featuresPossiblyMissing: []
+        }
       },
       clean: {
         plan: {
           missing: null,     // 'delete_rows' | 'fill'
           outliers: null,    // 'remove' | 'keep'
+          duplicates: null,  // 'remove' | 'keep'
+          whitespace: null,  // 'trim' | 'keep'
+          capitalization: null, // 'lower' | 'capitalize' | 'keep'
           labelColumn: '',
-          labelStandardise: null // 'lower_trim' | 'none'
+          labelEncoding: null // 'auto' | 'none'
         },
         cleaned: null, // { fields, rows, annotations, log }
         downloaded: false
@@ -675,6 +698,18 @@
       const headNumeric = numericFields.slice(0, maxNumeric);
       const moreNumeric = numericFields.length > headNumeric.length ? ` (+${numericFields.length - headNumeric.length} more)` : '';
 
+      // Detect issues for summary
+      let inconsistentNote = null;
+      try {
+        const issues = detectIssues(parsed);
+        const inconsistentCols = Object.entries(issues.capInconsistencyByCol || {})
+          .filter(([col, count]) => count > 0)
+          .map(([col]) => col);
+        if (inconsistentCols.length > 0) {
+          inconsistentNote = `- Inconsistent capitalisation detected in columns: ${inconsistentCols.join(', ')}`;
+        }
+      } catch (e) { /* ignore if detectIssues fails or not ready */ }
+
       const colSummaries = headFields.map(f => {
         const c = stats.columns?.[f];
         if (!c) return `- ${f}: (no stats)`;
@@ -690,6 +725,7 @@
         '<dataset_snapshot>',
         `- Size: ${Number.isFinite(rows) ? rows : '?'} rows × ${Number.isFinite(cols) ? cols : '?'} columns`,
         Number.isFinite(missingPct) ? `- Missing cells overall: ${missingPct.toFixed(1)}%` : null,
+        inconsistentNote,
         `- Columns: ${headFields.join(', ')}${moreFields}`,
         numericFields.length ? `- Numeric-ish columns: ${headNumeric.join(', ')}${moreNumeric}` : '- Numeric-ish columns: (none detected)',
         '',
@@ -892,9 +928,17 @@
           '<stage_instructions>',
           'For Clean (recommendations must be dataset-aware):',
           '- Use the dataset snapshot below to recommend specific cleaning steps (do not give generic advice).',
-          '- If the dataset has high missingness in important columns, say so and recommend a realistic fix (collect more, remove rows, or fill numeric-only).',
+          '- IMPORTANT: Do NOT output the raw <dataset_snapshot> block in your response. It is for your internal reasoning only.',
+          '- Instead, summarize the key issues you see (e.g., "I see 5% missing values in the Temperature column" or "The labels have mixed capitalisation like \'Pass\' and \'pass\'").',
+          '- Guide the student through the cleaning decisions available in the tool:',
+          '  * Missing Values: Delete rows, Fill with mean (numeric only), or Keep.',
+          '  * Outliers: Remove rows (if > 3 std dev) or Keep.',
+          '  * Duplicates: Remove or Keep.',
+          '  * Whitespace: Trim leading/trailing spaces or Keep.',
+          '  * Capitalisation: Lowercase, Capitalize, or Keep.',
+          '- Explain the impact of their choices (e.g., "Removing outliers helps if they are errors, but you might lose rare events").',
+          '- If the dataset has high missingness in important columns, say so and recommend a realistic fix.',
           '- If labels look inconsistent (different spellings/cases), recommend standardising labels and state why.',
-          '- If outliers are likely (numeric fields), warn about sensor glitches and suggest keeping/removing with a short justification.',
           '- Do NOT approve cleaning that would destroy the label/target or break alignment with the problem statement.',
           '',
           haveDataset ? datasetContext : '<dataset_snapshot>(no CSV uploaded yet)</dataset_snapshot>',
@@ -1212,7 +1256,85 @@
         outlierCountsByCol[f] = cnt;
       }
 
-      return { missingByCol, outlierCountsByCol, outlierRowFlags };
+      // Duplicates: find exact duplicate rows
+      const rowSignatures = new Map();
+      let duplicateCount = 0;
+      const duplicateRowIndices = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const sig = fields.map(f => String(rows[i][f] || '')).join('|');
+        if (rowSignatures.has(sig)) {
+          duplicateCount++;
+          duplicateRowIndices.push(i);
+        } else {
+          rowSignatures.set(sig, i);
+        }
+      }
+
+      // Whitespace issues: detect leading/trailing spaces in text columns
+      const textFields = fields.filter(f => !stats.overall.numericFields.includes(f));
+      let whitespaceCount = 0;
+      const whitespaceByCol = {};
+
+      for (const f of textFields) {
+        let colCount = 0;
+        for (let i = 0; i < rows.length; i++) {
+          const v = rows[i][f];
+          if (isMissing(v)) continue;
+          const str = String(v);
+          if (str !== str.trim()) {
+            colCount++;
+            whitespaceCount++;
+          }
+        }
+        whitespaceByCol[f] = colCount;
+      }
+
+      // Capitalisation inconsistency: detect if same word appears with different casing
+      let inconsistentCapCount = 0;
+      const capInconsistencyByCol = {};
+
+      for (const f of textFields) {
+        const valueMap = new Map(); // lowercase -> Set of original values
+        
+        for (let i = 0; i < rows.length; i++) {
+          const v = rows[i][f];
+          if (isMissing(v)) continue;
+          const str = String(v).trim();
+          if (str.length === 0) continue;
+          
+          const lower = str.toLowerCase();
+          if (!valueMap.has(lower)) {
+            valueMap.set(lower, new Set());
+          }
+          valueMap.get(lower).add(str);
+        }
+
+        let colIssues = 0;
+        for (const originals of valueMap.values()) {
+          if (originals.size > 1) {
+            colIssues += originals.size; // Count all variations as involved in inconsistency
+          }
+        }
+        
+        if (colIssues > 0) {
+          capInconsistencyByCol[f] = colIssues;
+          inconsistentCapCount += colIssues;
+        }
+      }
+
+      return { 
+        missingByCol, 
+        outlierCountsByCol, 
+        outlierRowFlags,
+        duplicateCount,
+        duplicateRowIndices,
+        whitespaceCount,
+        whitespaceByCol,
+        inconsistentCapCount,
+        capInconsistencyByCol,
+        textFields
+      };
     }
 
     function applyCleaning(parsed, plan) {
@@ -1289,29 +1411,115 @@
         log.push('Outliers: kept all rows. Outlier values are highlighted in the preview for your review.');
       }
 
-      // Labels
-      if (plan.labelColumn && plan.labelStandardise === 'lower_trim') {
-        const col = plan.labelColumn;
-        const beforeExamples = new Set();
-        const afterExamples = new Set();
+      // Duplicates
+      if (plan.duplicates === 'remove') {
+        const before = outRows.length;
+        const seen = new Map();
+        const uniqueRows = [];
+        
+        for (let i = 0; i < outRows.length; i++) {
+          const sig = fields.map(f => String(outRows[i][f] || '')).join('|');
+          if (!seen.has(sig)) {
+            seen.set(sig, true);
+            uniqueRows.push(outRows[i]);
+          }
+        }
+        
+        outRows = uniqueRows;
+        const removed = before - outRows.length;
+        log.push(`Duplicates: removed ${removed} exact duplicate row(s).`);
+      }
 
+      // Whitespace trimming
+      if (plan.whitespace === 'trim') {
+        let trimmedCount = 0;
+        const trimmedCols = [];
+        
+        for (const f of issues.textFields) {
+          let colTrimmed = false;
+          for (let i = 0; i < outRows.length; i++) {
+            const v = outRows[i][f];
+            if (isMissing(v)) continue;
+            const str = String(v);
+            const trimmed = str.trim();
+            if (str !== trimmed) {
+              outRows[i][f] = trimmed;
+              trimmedCount++;
+              colTrimmed = true;
+              if (!annotations[i]) annotations[i] = {};
+              annotations[i][f] = 'whitespace';
+            }
+          }
+          if (colTrimmed && trimmedCols.length < 5) trimmedCols.push(f);
+        }
+        
+        const colsMsg = trimmedCols.length > 0 ? ` (affected columns: ${trimmedCols.join(', ')})` : '';
+        log.push(`Whitespace: trimmed leading/trailing spaces from ${trimmedCount} cell(s)${colsMsg}.`);
+      }
+
+      // Capitalisation standardization
+      if (plan.capitalization === 'lower' || plan.capitalization === 'capitalize') {
+        let changedCount = 0;
+        const changedCols = [];
+        
+        for (const f of issues.textFields) {
+          let colChanged = false;
+          for (let i = 0; i < outRows.length; i++) {
+            const v = outRows[i][f];
+            if (isMissing(v)) continue;
+            const str = String(v).trim();
+            if (str.length === 0) continue;
+            
+            const transformed = plan.capitalization === 'lower' 
+              ? str.toLowerCase() 
+              : str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+            
+            if (str !== transformed) {
+              outRows[i][f] = transformed;
+              changedCount++;
+              colChanged = true;
+              if (!annotations[i]) annotations[i] = {};
+              annotations[i][f] = 'capitalization';
+            }
+          }
+          if (colChanged && changedCols.length < 5) changedCols.push(f);
+        }
+        
+        const action = plan.capitalization === 'lower' ? 'lowercase' : 'capitalise';
+        const colsMsg = changedCols.length > 0 ? ` (affected columns: ${changedCols.join(', ')})` : '';
+        log.push(`Capitalisation: standardized ${changedCount} cell(s) to ${action}${colsMsg}.`);
+      }
+
+      // Label Encoding
+      if (plan.labelColumn && plan.labelEncoding === 'auto') {
+        const col = plan.labelColumn;
+        // Find unique values
+        const uniques = new Set();
+        for (const r of outRows) {
+          const v = r[col];
+          if (!isMissing(v)) uniques.add(String(v).trim());
+        }
+        
+        // Sort alphabetically to be deterministic
+        const sorted = Array.from(uniques).sort();
+        const mapping = {};
+        sorted.forEach((val, idx) => mapping[val] = idx);
+        
+        let encodedCount = 0;
         for (let i = 0; i < outRows.length; i++) {
           const v = outRows[i][col];
           if (isMissing(v)) continue;
-          const s0 = String(v);
-          const s1 = String(v).trim().toLowerCase();
-          if (s0 !== s1) {
+          const str = String(v).trim();
+          if (str in mapping) {
+            outRows[i][col] = mapping[str];
+            encodedCount++;
             if (!annotations[i]) annotations[i] = {};
             annotations[i][col] = 'label';
-            outRows[i][col] = s1;
-            if (beforeExamples.size < 5) beforeExamples.add(s0);
-            if (afterExamples.size < 5) afterExamples.add(s1);
           }
         }
-
-        const b = Array.from(beforeExamples).join(', ');
-        const a = Array.from(afterExamples).join(', ');
-        log.push(`Labels: standardised "${col}" by trimming and lowercasing. Examples: [${b}] → [${a}]`);
+        
+        const mapStr = sorted.slice(0, 5).map((v, i) => `"${v}"→${i}`).join(', ') + (sorted.length > 5 ? '...' : '');
+        log.push(`Label Encoding: converted column "${col}" to numbers. Mapping: ${mapStr}`);
       }
 
       return {
@@ -1406,7 +1614,14 @@
         return (state.define.problemStatement || '').trim().length > 0 && (state.define.successMeasure || '').trim().length > 0;
       }
       if (key === 'collect') {
-        return !!state.collect.parsed && (state.collect.csvFileName || '').trim().length > 0;
+        const plan = state.collect.plan || {};
+        // All fields are now optional - just check if user has saved something
+        const hasAnyContent = 
+          (plan.requiredFeatures || '').trim().length > 0 ||
+          (plan.labelColumn || '').trim().length > 0 ||
+          (plan.labelingCriteria || '').trim().length > 0 ||
+          (plan.contextToRecord || '').trim().length > 0;
+        return hasAnyContent;
       }
       if (key === 'clean') {
         return !!state.clean.cleaned && state.clean.downloaded === true;
@@ -1605,89 +1820,647 @@
 
     function renderCollectStage(container) {
       const parsed = state.collect.parsed;
-
-      const uploadCard = `
-        <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <h3 class="font-bold text-slate-800">Upload your CSV</h3>
-              <p class="text-sm text-slate-600 mt-1">File limit: 5MB. The file stays in your browser.</p>
+      const plan = state.collect.plan || {};
+      const validation = state.collect.validation || {};
+      
+      // Section 1: Reference from Define
+      const defineRef = `
+        <div class="bg-blue-50 border-2 border-blue-200 rounded-xl p-4 mb-6">
+          <div class="flex items-start gap-3">
+            <div class="mt-0.5">
+              <i data-lucide="clipboard-list" class="w-5 h-5 text-blue-600"></i>
             </div>
-            <div class="flex items-center gap-2">
-              <input id="csv-file" type="file" accept=".csv" class="hidden" />
-              <button id="csv-upload" class="flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">
-                <i data-lucide="upload" class="w-4 h-4"></i>
-                Choose file
-              </button>
+            <div class="min-w-0 flex-1">
+              <h4 class="font-bold text-blue-900 text-sm uppercase tracking-wide">Your Problem (from Define stage)</h4>
+              <p class="mt-2 text-sm text-blue-800 leading-relaxed">${escapeHtml(state.define.problemStatement || '(not defined yet)')}</p>
+              <p class="mt-2 text-xs text-blue-700"><strong>Success measure:</strong> ${escapeHtml(state.define.successMeasure || '(not defined yet)')}</p>
+              <p class="mt-2 text-xs text-blue-600">Your dataset must answer this question.</p>
             </div>
           </div>
-
-          <div id="csv-meta" class="mt-3 text-sm text-slate-700"></div>
-          <div id="csv-warning" class="mt-3 hidden text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3"></div>
         </div>
       `;
 
-      const detailsCard = parsed ? `
-        <div class="bg-white border border-slate-200 rounded-lg p-4">
-          <h3 class="font-bold text-slate-800">Quick preview</h3>
-          <p class="text-sm text-slate-600 mt-1">Check that the columns match your problem statement.</p>
+      // Section 2: Data Collection Plan
+      const planSection = `
+        <div class="bg-white border-2 border-slate-200 rounded-xl p-6 mb-6">
+          <h3 class="font-bold text-slate-900 text-lg flex items-center gap-2">
+            <span class="flex items-center justify-center w-7 h-7 rounded-lg bg-indigo-100 text-indigo-700 text-sm font-bold">1</span>
+            Data Collection Plan
+          </h3>
+          <p class="text-sm text-slate-600 mt-2">Document what data you need to collect and how you will collect it.</p>
 
-          <div class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
-              <div class="text-xs font-bold text-slate-500 uppercase">Rows</div>
-              <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${parsed.stats.overall.rows}</div>
+          <div class="mt-5 space-y-5">
+            
+            <!-- Required Features -->
+            <div>
+              <label class="block text-sm font-semibold text-slate-800 mb-1.5">
+                What features (sensor readings) will you collect?
+              </label>
+              <textarea 
+                id="plan-features" 
+                rows="4" 
+                class="w-full px-3 py-2 border-2 border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 transition-all font-mono"
+                placeholder="List each column you will collect. Example:
+- Sensor_Value_1 (sensor reading, numeric)
+- Sensor_Value_2 (sensor reading, numeric)  
+- Category (context, categorical)
+- Timestamp (when measured)"
+              >${escapeHtml(plan.requiredFeatures || '')}</textarea>
+              <p class="text-xs text-slate-500 mt-1">These become columns in your CSV. Include both sensor data and context.</p>
             </div>
-            <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
-              <div class="text-xs font-bold text-slate-500 uppercase">Columns</div>
-              <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${parsed.stats.overall.cols}</div>
+
+            <!-- Label Column -->
+            <div>
+              <label class="block text-sm font-semibold text-slate-800 mb-1.5">
+                What is your target/label column?
+              </label>
+              <input 
+                type="text" 
+                id="plan-label-column" 
+                class="w-full px-3 py-2 border-2 border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 transition-all"
+                placeholder="e.g., Accept_Reject, Temperature_Level, Water_Quality"
+                value="${escapeHtml(plan.labelColumn || '')}"
+              />
+              <p class="text-xs text-slate-500 mt-1">This is the outcome you want your model to predict.</p>
             </div>
-            <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
-              <div class="text-xs font-bold text-slate-500 uppercase">Missing cells</div>
-              <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${parsed.stats.overall.missingPct.toFixed(1)}%</div>
+
+            <!-- Labeling Criteria (highlighted as most important) -->
+            <div class="border-2 border-amber-300 bg-amber-50 rounded-xl p-4">
+              <div class="flex items-start justify-between gap-2 mb-1.5">
+                <label class="block text-sm font-semibold text-amber-900">
+                  How will you create labels for each row?
+                </label>
+                <button type="button" id="label-help-btn" class="text-amber-700 hover:text-amber-900 transition-colors" title="Show examples">
+                  <i data-lucide="help-circle" class="w-4 h-4"></i>
+                </button>
+              </div>
+              <div id="label-help" class="hidden mb-3 p-3 bg-white border border-amber-200 rounded-lg text-xs text-amber-800">
+                <p class="font-semibold mb-2">Why this matters:</p>
+                <p class="mb-2">Your label is what you want to predict. It must be based on real-world truth, not on the sensor data you are collecting.</p>
+                <p class="font-semibold mb-1">Good examples:</p>
+                <ul class="list-disc list-inside space-y-1 ml-2">
+                  <li>"If item passes quality inspection, label 'Pass'. Otherwise 'Fail'."</li>
+                  <li>"If temperature exceeds safe limit (stored separately), label 'High'. Otherwise 'Normal'."</li>
+                  <li>"If expert observer marks condition as concerning, label 'Alert'."</li>
+                </ul>
+                <p class="font-semibold mb-1 mt-2">Bad examples:</p>
+                <ul class="list-disc list-inside space-y-1 ml-2">
+                  <li>"If sensor value is low, label as 'Good'." (circular reasoning)</li>
+                  <li>"Random labels." (no objective criteria)</li>
+                </ul>
+              </div>
+              <textarea 
+                id="plan-labeling-criteria" 
+                rows="4" 
+                class="w-full px-3 py-2 border-2 border-amber-200 bg-white rounded-lg text-sm focus:border-amber-500 focus:outline-none focus:ring-2 focus:ring-amber-200 transition-all"
+                placeholder="Describe the RULE for labeling, independent of sensor readings.
+
+Good example: &quot;If the measured item meets quality threshold X, label as 'Pass'. Otherwise 'Fail'.&quot;
+
+Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circular - don't use sensor values to define labels!)"
+              >${escapeHtml(plan.labelingCriteria || '')}</textarea>
+              <p class="text-xs text-amber-700 mt-1 flex items-start gap-1.5">
+                <i data-lucide="alert-triangle" class="w-4 h-4 mt-0.5 flex-shrink-0"></i>
+                <span><strong>Critical:</strong> Your label must be based on observable physical truth, NOT on the sensor readings you are trying to predict with.</span>
+              </p>
+            </div>
+
+            <!-- Context to Record -->
+            <div>
+              <label class="block text-sm font-semibold text-slate-800 mb-1.5">
+                What contextual information should be recorded alongside sensor readings?
+              </label>
+              <textarea 
+                id="plan-context" 
+                rows="3" 
+                class="w-full px-3 py-2 border-2 border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 transition-all font-mono"
+                placeholder="List context that might affect readings or explain variations:
+- Timestamp (when measured)
+- Location/position (where on item or which site)
+- Device ID (which sensor/Arduino)
+- Environmental conditions (temperature, humidity, lighting)
+- Item ID (which item, which sample)"
+              >${escapeHtml(plan.contextToRecord || '')}</textarea>
+              <p class="text-xs text-slate-500 mt-1">Context helps you understand patterns and outliers.</p>
+            </div>
+
+            <!-- Optional Fields (collapsed by default) -->
+            <details class="border border-slate-200 rounded-lg">
+              <summary class="px-4 py-3 cursor-pointer hover:bg-slate-50 rounded-lg text-sm font-semibold text-slate-700">
+                Optional: When, Where, Device (click to expand)
+              </summary>
+              <div class="px-4 pb-4 pt-2 space-y-4">
+                <div>
+                  <label class="block text-sm font-semibold text-slate-700 mb-1.5">When will you collect data?</label>
+                  <input 
+                    type="text" 
+                    id="plan-period" 
+                    class="w-full px-3 py-2 border-2 border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:outline-none"
+                    placeholder="e.g., March 2024 over 2 weeks, Every day after school"
+                    value="${escapeHtml(plan.collectionPeriod || '')}"
+                  />
+                  <p class="text-xs text-slate-500 mt-1">Time period can reveal seasonal or time-based patterns.</p>
+                </div>
+                <div>
+                  <label class="block text-sm font-semibold text-slate-700 mb-1.5">Where will you collect data?</label>
+                  <input 
+                    type="text" 
+                    id="plan-location" 
+                    class="w-full px-3 py-2 border-2 border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:outline-none"
+                    placeholder="e.g., School science lab, Community workshop"
+                    value="${escapeHtml(plan.collectionLocation || '')}"
+                  />
+                  <p class="text-xs text-slate-500 mt-1">Location context matters for environmental projects.</p>
+                </div>
+                <div>
+                  <label class="block text-sm font-semibold text-slate-700 mb-1.5">What device or sensor will you use?</label>
+                  <input 
+                    type="text" 
+                    id="plan-device" 
+                    class="w-full px-3 py-2 border-2 border-slate-200 rounded-lg text-sm focus:border-indigo-500 focus:outline-none"
+                    placeholder="e.g., Arduino Uno + TCS3200 color sensor"
+                    value="${escapeHtml(plan.deviceInfo || '')}"
+                  />
+                </div>
+              </div>
+            </details>
+
+          </div>
+
+          <div class="mt-5 flex items-center justify-between">
+            <button id="save-plan" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold transition-colors">
+              Save Data Collection Plan
+            </button>
+            <span id="plan-status" class="text-sm text-slate-600"></span>
+          </div>
+        </div>
+      `;
+
+      // Section 3: Upload & Validate (optional)
+      const uploadSection = `
+        <div class="bg-white border-2 border-slate-200 rounded-xl p-6 mb-6">
+          <h3 class="font-bold text-slate-900 text-lg flex items-center gap-2 mb-2">
+            <span class="flex items-center justify-center w-7 h-7 rounded-lg bg-indigo-100 text-indigo-700 text-sm font-bold">2</span>
+            Upload & Validate
+            <span class="text-xs font-normal text-slate-500 ml-2">(Optional - you can do this later)</span>
+          </h3>
+          <p class="text-sm text-slate-600 mb-4">
+            Have you collected data already? Upload your CSV to validate it matches your plan.<br>
+            If you haven't collected data yet, that's fine! Save your plan above and return to this stage later.
+          </p>
+
+          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <p class="text-sm font-semibold text-slate-700">CSV file requirements:</p>
+                <ul class="mt-1 text-xs text-slate-600 list-disc list-inside space-y-0.5">
+                  <li>Header row with column names</li>
+                  <li>CSV format (.csv extension)</li>
+                  <li>Maximum 5MB file size</li>
+                </ul>
+              </div>
+              <div class="flex items-center gap-2">
+                <input id="csv-file" type="file" accept=".csv" class="hidden" />
+                <button id="csv-upload" class="flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold whitespace-nowrap">
+                  <i data-lucide="upload" class="w-4 h-4"></i>
+                  Choose CSV
+                </button>
+              </div>
+            </div>
+            <div id="csv-meta" class="mt-3 text-sm text-slate-700"></div>
+            <div id="csv-warning" class="mt-3 hidden text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3"></div>
+          </div>
+
+          <div id="validation-results" class="mt-4">
+            ${parsed && validation.hasUpload ? buildValidationResults(parsed, plan, validation) : ''}
+          </div>
+        </div>
+      `;
+
+      // Section 4: Completion
+      const completionSection = buildCompletionSection(plan, validation);
+
+      container.innerHTML = defineRef + planSection + uploadSection + completionSection;
+
+      // Wire up plan form inputs
+      const planInputs = [
+        { id: 'plan-features', field: 'requiredFeatures' },
+        { id: 'plan-label-column', field: 'labelColumn' },
+        { id: 'plan-labeling-criteria', field: 'labelingCriteria' },
+        { id: 'plan-context', field: 'contextToRecord' },
+        { id: 'plan-period', field: 'collectionPeriod' },
+        { id: 'plan-location', field: 'collectionLocation' },
+        { id: 'plan-device', field: 'deviceInfo' }
+      ];
+
+      planInputs.forEach(({ id, field }) => {
+        const el = $(id);
+        if (el) {
+          el.addEventListener('input', () => {
+            state.collect.plan[field] = el.value;
+            persistDebounced();
+            renderStageHeader(); // Update next button
+          });
+        }
+      });
+
+      // Help button for labeling criteria
+      const labelHelpBtn = $('label-help-btn');
+      const labelHelp = $('label-help');
+      if (labelHelpBtn && labelHelp) {
+        labelHelpBtn.onclick = (e) => {
+          e.preventDefault();
+          labelHelp.classList.toggle('hidden');
+          // Update icon
+          const icon = labelHelpBtn.querySelector('i');
+          if (icon) {
+            icon.setAttribute('data-lucide', labelHelp.classList.contains('hidden') ? 'help-circle' : 'x-circle');
+            if (window.lucide?.createIcons) window.lucide.createIcons();
+          }
+        };
+      }
+
+      // Save plan button
+      const savePlanBtn = $('save-plan');
+      if (savePlanBtn) {
+        savePlanBtn.onclick = () => {
+          // All fields are now optional - just save whatever the user has entered
+          
+          // Enhanced auto-generate notes if empty
+          if (!(state.notes.collect || '').trim()) {
+            const plan = state.collect.plan;
+            const notesLines = [];
+            if (plan.labelColumn) notesLines.push(`Target: ${plan.labelColumn}`);
+            if (plan.labelingCriteria) {
+              notesLines.push(`Labeling: ${(plan.labelingCriteria || '').substring(0, 120)}${(plan.labelingCriteria || '').length > 120 ? '...' : ''}`);
+            }
+            if (plan.collectionPeriod) notesLines.push(`When: ${plan.collectionPeriod}`);
+            if (plan.collectionLocation) notesLines.push(`Where: ${plan.collectionLocation}`);
+            if (state.collect.csvFileName) notesLines.push(`File: ${state.collect.csvFileName}`);
+            if (notesLines.length > 0) {
+              state.notes.collect = notesLines.join('\n');
+            }
+          }
+
+          $('plan-status').textContent = 'Plan saved';
+          $('plan-status').className = 'text-sm text-emerald-700';
+          
+          markCompletedIfReady();
+          persistDebounced();
+          renderStageHeader();
+          
+          setTimeout(() => {
+            if ($('plan-status')) {
+              $('plan-status').textContent = '';
+            }
+          }, 3000);
+        };
+      }
+
+      // Wire up CSV upload
+      wireUpCsvUpload();
+    }
+
+    function buildValidationResults(parsed, plan, validation) {
+      const stats = parsed.stats.overall;
+      const labelCol = plan.labelColumn || '';
+      
+      // Check if label column exists
+      const labelFound = parsed.fields.includes(labelCol);
+      const actualLabelCol = validation.labelColumnActual || labelCol;
+      
+      // Feature matching: simple heuristic to find mentioned features in plan
+      const featuresText = (plan.requiredFeatures || '').toLowerCase();
+      const featuresFound = [];
+      const featuresPossiblyMissing = [];
+      
+      // Extract potential column names from features text (look for lines starting with - or bullets)
+      const featureLines = featuresText.split('\n').filter(line => line.trim().match(/^[-•*]/));
+      featureLines.forEach(line => {
+        // Extract first word/phrase before parenthesis or comma
+        const match = line.match(/[-•*]\s*([a-z_][a-z0-9_\s]*)/i);
+        if (match) {
+          const featureName = match[1].trim();
+          // Check if any CSV column contains this name (case insensitive, flexible matching)
+          const foundCol = parsed.fields.find(f => 
+            f.toLowerCase().includes(featureName.toLowerCase()) || 
+            featureName.toLowerCase().includes(f.toLowerCase())
+          );
+          if (foundCol) {
+            featuresFound.push(foundCol);
+          } else {
+            featuresPossiblyMissing.push(featureName);
+          }
+        }
+      });
+
+      let featuresSection = '';
+      if (featuresFound.length > 0 || featuresPossiblyMissing.length > 0) {
+        const foundHtml = featuresFound.length > 0 ? `
+          <div class="text-xs text-emerald-700 mt-1">
+            <span class="font-semibold">Likely found:</span> ${featuresFound.slice(0, 8).map(f => escapeHtml(f)).join(', ')}${featuresFound.length > 8 ? ' ...' : ''}
+          </div>
+        ` : '';
+
+        const missingHtml = featuresPossiblyMissing.length > 0 ? `
+          <div class="text-xs text-amber-700 mt-1">
+            <span class="font-semibold">Possibly missing:</span> ${featuresPossiblyMissing.slice(0, 5).map(f => escapeHtml(f)).join(', ')}${featuresPossiblyMissing.length > 5 ? ' ...' : ''}
+          </div>
+        ` : '';
+
+        if (foundHtml || missingHtml) {
+          featuresSection = `
+            <div class="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+              <div class="flex items-start gap-2">
+                <i data-lucide="list" class="w-4 h-4 text-slate-600 mt-0.5 flex-shrink-0"></i>
+                <div class="min-w-0 flex-1">
+                  <p class="text-xs font-semibold text-slate-700">Feature validation:</p>
+                  ${foundHtml}
+                  ${missingHtml}
+                  ${missingHtml ? '<p class="text-xs text-slate-500 mt-1">Minor name differences are okay. Verify important features are present.</p>' : ''}
+                </div>
+              </div>
+            </div>
+          `;
+        }
+      }
+
+      // Extra columns not mentioned
+      const extraCols = parsed.fields.filter(f => 
+        !featuresFound.includes(f) && 
+        f !== labelCol &&
+        !f.toLowerCase().includes('timestamp') &&
+        !f.toLowerCase().includes('date') &&
+        !f.toLowerCase().includes('id')
+      );
+
+      let extraSection = '';
+      if (extraCols.length > 0 && extraCols.length <= 5) {
+        extraSection = `
+          <div class="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <div class="flex items-start gap-2">
+              <i data-lucide="info" class="w-4 h-4 text-blue-600 mt-0.5 flex-shrink-0"></i>
+              <div class="min-w-0 flex-1">
+                <p class="text-xs font-semibold text-blue-800">Extra columns in CSV:</p>
+                <p class="text-xs text-blue-700 mt-1">${extraCols.map(f => escapeHtml(f)).join(', ')}</p>
+                <p class="text-xs text-blue-600 mt-1">These were not mentioned in your plan but may be useful context.</p>
+              </div>
             </div>
           </div>
+        `;
+      }
+      
+      let labelSection = '';
+      if (labelCol) {
+        if (labelFound) {
+          const labelStats = parsed.stats.columns[labelCol];
+          const uniqueCount = labelStats?.uniqueCountApprox || 0;
+          const sampleValues = (labelStats?.sampleValues || []).slice(0, 10);
+          
+          // Calculate distribution for categorical labels
+          let distributionHtml = '';
+          if (uniqueCount <= 20 && uniqueCount > 0) {
+            // Count occurrences
+            const valueCounts = {};
+            parsed.rows.forEach(row => {
+              const val = String(row[labelCol] || '');
+              valueCounts[val] = (valueCounts[val] || 0) + 1;
+            });
+            const sortedValues = Object.entries(valueCounts)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 10);
+            
+            distributionHtml = `
+              <div class="mt-2 text-xs text-emerald-700">
+                <span class="font-semibold">Distribution:</span> 
+                ${sortedValues.map(([val, count]) => `${escapeHtml(val)} (${count})`).join(', ')}
+              </div>
+            `;
+          }
+          
+          let warning = '';
+          if (uniqueCount > 50) {
+            warning = `<div class="mt-2 text-xs text-amber-700 flex items-start gap-1.5">
+              <i data-lucide="alert-triangle" class="w-3.5 h-3.5 mt-0.5 flex-shrink-0"></i>
+              <span>Your label has ${uniqueCount} unique values. Is this really a category to predict? For regression, this is fine. For classification, you typically want fewer categories.</span>
+            </div>`;
+          } else if (uniqueCount === 1) {
+            warning = `<div class="mt-2 text-xs text-amber-700 flex items-start gap-1.5">
+              <i data-lucide="alert-triangle" class="w-3.5 h-3.5 mt-0.5 flex-shrink-0"></i>
+              <span>All rows have the same label. You need variation to train a model.</span>
+            </div>`;
+          } else if (uniqueCount === 2) {
+            warning = `<div class="mt-2 text-xs text-emerald-700 flex items-start gap-1.5">
+              <i data-lucide="check-circle" class="w-3.5 h-3.5 mt-0.5 flex-shrink-0"></i>
+              <span>Binary classification detected: ${sampleValues.join(' vs ')}</span>
+            </div>`;
+          } else if (uniqueCount >= parsed.rows.length * 0.9) {
+            warning = `<div class="mt-2 text-xs text-amber-700 flex items-start gap-1.5">
+              <i data-lucide="alert-triangle" class="w-3.5 h-3.5 mt-0.5 flex-shrink-0"></i>
+              <span>Almost every row has a unique label (${uniqueCount} unique out of ${parsed.rows.length} rows). This looks more like an ID than a prediction target.</span>
+            </div>`;
+          }
+
+          labelSection = `
+            <div class="p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
+              <div class="flex items-start gap-2">
+                <i data-lucide="check-circle" class="w-4 h-4 text-emerald-600 mt-0.5 flex-shrink-0"></i>
+                <div class="min-w-0 flex-1">
+                  <p class="text-sm font-semibold text-emerald-800">Label column found: "${escapeHtml(labelCol)}"</p>
+                  <p class="text-xs text-emerald-700 mt-1">
+                    <span class="font-semibold">Unique values:</span> ${uniqueCount}
+                    ${uniqueCount <= 10 ? ` (${sampleValues.map(v => escapeHtml(String(v))).join(', ')})` : ''}
+                  </p>
+                  ${distributionHtml}
+                  ${warning}
+                </div>
+              </div>
+            </div>
+          `;
+        } else {
+          labelSection = `
+            <div class="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+              <div class="flex items-start gap-2">
+                <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0"></i>
+                <div class="min-w-0 flex-1">
+                  <p class="text-sm font-semibold text-amber-800">Column "${escapeHtml(labelCol)}" not found in CSV</p>
+                  <p class="text-xs text-amber-700 mt-1">Did you name it differently than planned? Select the actual column:</p>
+                  <select id="actual-label-column" class="mt-2 px-2 py-1 border border-amber-300 rounded text-sm bg-white">
+                    <option value="">-- Select column --</option>
+                    ${parsed.fields.map(f => `<option value="${escapeHtml(f)}" ${f === actualLabelCol ? 'selected' : ''}>${escapeHtml(f)}</option>`).join('')}
+                  </select>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+      }
+
+      // Data quality warnings
+      const qualityWarnings = [];
+      if (stats.rows < 30) {
+        qualityWarnings.push('Consider collecting more samples (30+ recommended for reliable ML)');
+      }
+      if (stats.missingPct > 50) {
+        qualityWarnings.push('Over 50% of data is missing - consider collecting more complete data');
+      }
+      if (stats.rows < 10) {
+        qualityWarnings.push('Very few samples - you need at least 20-30 examples to train a model');
+      }
+
+      const qualitySection = qualityWarnings.length > 0 ? `
+        <div class="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+          <div class="flex items-start gap-2">
+            <i data-lucide="alert-circle" class="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0"></i>
+            <div class="min-w-0 flex-1">
+              <p class="text-xs font-semibold text-amber-800">Data quality notes:</p>
+              <ul class="mt-1 text-xs text-amber-700 list-disc list-inside space-y-0.5">
+                ${qualityWarnings.map(w => `<li>${w}</li>`).join('')}
+              </ul>
+            </div>
+          </div>
+        </div>
+      ` : '';
+
+      const effectiveLabelCol = labelFound ? labelCol : (validation.labelColumnActual || '');
+
+      return `
+        <div class="space-y-3">
+          <div class="grid grid-cols-3 gap-3">
+            <div class="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+              <div class="text-xs font-bold text-slate-500 uppercase">Rows</div>
+              <div class="text-xl font-extrabold text-slate-800 tabular-nums">${stats.rows}</div>
+            </div>
+            <div class="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+              <div class="text-xs font-bold text-slate-500 uppercase">Columns</div>
+              <div class="text-xl font-extrabold text-slate-800 tabular-nums">${stats.cols}</div>
+            </div>
+            <div class="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+              <div class="text-xs font-bold text-slate-500 uppercase">Missing</div>
+              <div class="text-xl font-extrabold text-slate-800 tabular-nums">${stats.missingPct.toFixed(1)}%</div>
+            </div>
+          </div>
+          
+          ${labelSection}
+          ${featuresSection}
+          ${extraSection}
+          ${qualitySection}
 
           <div class="mt-4">
-            ${buildCsvPreviewTable(parsed.fields, parsed.rows, null, 12)}
+            <div class="flex items-center justify-between mb-2">
+              <p class="text-xs font-semibold text-slate-700">Data preview (first 12 rows):</p>
+              ${effectiveLabelCol ? `<span class="text-xs text-amber-600 flex items-center gap-1"><span class="inline-block w-3 h-3 bg-amber-100 border border-amber-300 rounded"></span>= Label column</span>` : ''}
+            </div>
+            ${buildCsvPreviewTableWithHighlight(parsed.fields, parsed.rows, effectiveLabelCol, 12)}
+            <p class="text-xs text-slate-500 mt-2">Missing values are fine - you'll handle them in the Clean stage.</p>
           </div>
-
-          <div class="mt-4 flex items-center justify-between">
-            <button id="collect-save" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">Confirm dataset</button>
-            <span id="collect-status" class="text-sm text-slate-600"></span>
-          </div>
-
-          <div class="mt-3 text-sm text-[var(--color-text-muted)]">
-            Tip: If your file has missing values or inconsistent labels, that is fine. You will fix it in the Clean stage.
-          </div>
-        </div>
-      ` : `
-        <div class="bg-white border border-slate-200 rounded-lg p-4">
-          <h3 class="font-bold text-slate-800">What this stage needs</h3>
-          <p class="text-sm text-slate-600 mt-1">Upload a CSV that matches your project.</p>
-          <ul class="mt-3 text-sm text-slate-700 list-disc list-inside space-y-1">
-            <li>A header row (column names)</li>
-            <li>Each row should represent one observation (one moment or one example)</li>
-          </ul>
         </div>
       `;
+    }
 
-      container.innerHTML = `<div class="space-y-4">${uploadCard}${detailsCard}</div>`;
+    function buildCsvPreviewTableWithHighlight(fields, rows, labelColumn, maxRows = 15) {
+      const head = fields.slice(0, 10);
+      const showNote = fields.length > head.length;
+      const bodyRows = rows.slice(0, maxRows);
 
+      const thead = `
+        <thead>
+          <tr class="bg-slate-100 border-b-2 border-slate-300">
+            ${head.map(f => `<th class="px-3 py-2 text-left text-xs font-bold text-slate-700 ${f === labelColumn ? 'bg-amber-100 border-x-2 border-amber-300' : ''}">${escapeHtml(f)}</th>`).join('')}
+          </tr>
+        </thead>
+      `;
+
+      const tbody = `
+        <tbody>
+          ${bodyRows.map((row, idx) => `
+            <tr class="border-b border-slate-200 hover:bg-slate-50">
+              ${head.map(f => {
+                const val = row[f];
+                const isEmpty = val === null || val === undefined || String(val).trim() === '';
+                const cellClass = isEmpty ? 'text-slate-400 italic' : '';
+                const isLabel = f === labelColumn;
+                const bgClass = isLabel ? 'bg-amber-50 border-x border-amber-200' : '';
+                return `<td class="px-3 py-2 text-xs font-mono ${cellClass} ${bgClass}">${isEmpty ? '(empty)' : escapeHtml(String(val))}</td>`;
+              }).join('')}
+            </tr>
+          `).join('')}
+        </tbody>
+      `;
+
+      const note = showNote
+        ? `<div class="mt-2 text-sm text-slate-500">Showing first ${head.length} columns. Your file has ${fields.length} columns.</div>`
+        : '';
+
+      return `
+        <div class="border border-slate-200 rounded-lg overflow-hidden bg-white">
+          <div class="overflow-x-auto max-h-80 overflow-y-auto nice-scroll">
+            <table class="w-full text-left border-collapse">
+              ${thead}
+              ${tbody}
+            </table>
+          </div>
+          <div class="px-3 py-2 bg-slate-50 border-t border-slate-200 text-xs text-slate-600">
+            Showing ${Math.min(bodyRows.length, maxRows)} of ${rows.length} rows
+          </div>
+        </div>
+        ${note}
+      `;
+    }
+
+    function buildCompletionSection(plan, validation) {
+      const hasAnyContent = 
+        (plan.requiredFeatures || '').trim().length > 0 ||
+        (plan.labelColumn || '').trim().length > 0 ||
+        (plan.labelingCriteria || '').trim().length > 0 ||
+        (plan.contextToRecord || '').trim().length > 0;
+
+      const hasUpload = validation.hasUpload || false;
+
+      const buttonText = hasAnyContent ? 'Confirm Plan & Continue' : 'Save at least one field to continue';
+      const tipText = hasUpload && validation.labelColumnFound 
+        ? 'Your data collection plan is documented and your CSV is validated.'
+        : 'Fill in as much as you can now. You can continue with just your plan, or upload data to validate it.';
+
+      return `
+        <div class="bg-gradient-to-br from-indigo-50 to-blue-50 border-2 border-indigo-200 rounded-xl p-6">
+          <button 
+            id="confirm-collect" 
+            class="w-full px-4 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-lg font-semibold transition-colors"
+            ${hasAnyContent ? '' : 'disabled'}
+          >
+            ${buttonText}
+          </button>
+
+          <p class="text-xs text-indigo-700 mt-3 text-center">${tipText}</p>
+        </div>
+      `;
+    }
+
+    function wireUpCsvUpload() {
       const fileInput = $('csv-file');
-      $('csv-upload').onclick = () => fileInput.click();
+      const uploadBtn = $('csv-upload');
+      
+      if (!fileInput || !uploadBtn) return;
+
+      uploadBtn.onclick = () => fileInput.click();
 
       fileInput.onchange = async (e) => {
         const file = e.target.files?.[0];
         if (!file) return;
 
-        // Reset
         setStageAlert('');
-        $('csv-warning').classList.add('hidden');
-        $('csv-warning').textContent = '';
+        const warnEl = $('csv-warning');
+        if (warnEl) {
+          warnEl.classList.add('hidden');
+          warnEl.textContent = '';
+        }
 
         if (file.size > 5 * 1024 * 1024) {
-          $('csv-warning').classList.remove('hidden');
-          $('csv-warning').textContent = 'This file is larger than 5MB. Please export a smaller CSV for the classroom tool.';
+          if (warnEl) {
+            warnEl.classList.remove('hidden');
+            warnEl.textContent = 'This file is larger than 5MB. Please export a smaller CSV.';
+          }
           return;
         }
 
@@ -1699,48 +2472,93 @@
           state.collect.csvText = text;
           state.collect.parsed = parsed;
           state.collect.csvTooLargeToPersist = false;
+          state.collect.validation.hasUpload = true;
 
-          $('csv-meta').innerHTML = `<span class="font-semibold">Loaded:</span> ${escapeHtml(file.name)} (${Math.round(file.size / 1024)} KB)`;
+          // Validate label column
+          const labelCol = state.collect.plan.labelColumn || '';
+          const labelFound = labelCol && parsed.fields.includes(labelCol);
+          state.collect.validation.labelColumnFound = labelFound;
 
-          // Auto notes
-          if (!(state.notes.collect || '').trim()) {
-            state.notes.collect = `Dataset file: ${file.name}\nRows: ${parsed.stats.overall.rows}\nColumns: ${parsed.stats.overall.cols}`;
+          if (labelFound) {
+            const labelStats = parsed.stats.columns[labelCol];
+            state.collect.validation.labelUniqueCount = labelStats?.uniqueCountApprox || 0;
+            state.collect.validation.labelPreview = (labelStats?.sampleValues || []).slice(0, 10);
           }
 
-          markCompletedIfReady();
+          // Enhanced auto-generate or update notes
+          if (!(state.notes.collect || '').trim()) {
+            const plan = state.collect.plan;
+            const notesLines = [
+              `Target: ${plan.labelColumn || '(not specified)'}`,
+              `File: ${file.name}`,
+              `Rows: ${parsed.stats.overall.rows}, Columns: ${parsed.stats.overall.cols}`
+            ];
+            if (labelFound) {
+              notesLines.push(`Label found: ${state.collect.validation.labelUniqueCount} unique values`);
+            }
+            if (plan.labelingCriteria) {
+              notesLines.push(`Labeling: ${(plan.labelingCriteria || '').substring(0, 100)}${(plan.labelingCriteria || '').length > 100 ? '...' : ''}`);
+            }
+            state.notes.collect = notesLines.join('\n');
+          }
+
+          const metaEl = $('csv-meta');
+          if (metaEl) {
+            metaEl.innerHTML = `<span class="font-semibold">Loaded:</span> ${escapeHtml(file.name)} (${Math.round(file.size / 1024)} KB, ${parsed.stats.overall.rows} rows, ${parsed.stats.overall.cols} columns)`;
+          }
+
           persistDebounced();
           renderAll();
 
-          // Mentor prompt
-          pushMessage('assistant', 'Thanks. In one sentence: what does one row in your CSV represent in real life?');
-
         } catch (err) {
-          $('csv-warning').classList.remove('hidden');
-          $('csv-warning').textContent = 'Could not parse CSV: ' + (err.message || String(err));
+          if (warnEl) {
+            warnEl.classList.remove('hidden');
+            warnEl.textContent = 'Could not parse CSV: ' + (err.message || String(err));
+          }
         } finally {
           e.target.value = '';
         }
       };
 
-      if (state.collect.csvFileName && $('csv-meta')) {
-        $('csv-meta').innerHTML = `<span class="font-semibold">Loaded:</span> ${escapeHtml(state.collect.csvFileName)}`;
-      }
-
-      const warn = $('csv-warning');
-      if (warn && state.collect.csvTooLargeToPersist) {
-        warn.classList.remove('hidden');
-        warn.textContent = 'Note: Your CSV is too large to save into localStorage. If you refresh the page, you may need to re-upload the file.';
-      }
-
-      const btn = document.getElementById('collect-save');
-      if (btn) {
-        btn.onclick = () => {
-          if (!state.collect.parsed) return;
+      // Wire up confirm button
+      const confirmBtn = $('confirm-collect');
+      if (confirmBtn) {
+        confirmBtn.onclick = () => {
+          if (!canAdvance()) return;
+          
           state.completed.collect = true;
           persistDebounced();
           renderAll();
           toast('Collect stage confirmed');
         };
+      }
+
+      // Wire up actual label column selector if present
+      const actualLabelSelect = $('actual-label-column');
+      if (actualLabelSelect) {
+        actualLabelSelect.onchange = () => {
+          const selected = actualLabelSelect.value;
+          if (selected) {
+            state.collect.validation.labelColumnActual = selected;
+            state.collect.validation.labelColumnFound = true;
+            
+            const labelStats = state.collect.parsed?.stats?.columns?.[selected];
+            if (labelStats) {
+              state.collect.validation.labelUniqueCount = labelStats.uniqueCountApprox || 0;
+              state.collect.validation.labelPreview = (labelStats.sampleValues || []).slice(0, 10);
+            }
+            
+            persistDebounced();
+            renderAll();
+          }
+        };
+      }
+
+      // Handle localStorage warning
+      const warnEl2 = $('csv-warning');
+      if (warnEl2 && state.collect.csvTooLargeToPersist) {
+        warnEl2.classList.remove('hidden');
+        warnEl2.textContent = 'Note: Your CSV is too large to save into localStorage. If you refresh the page, you may need to re-upload the file.';
       }
     }
 
@@ -1759,85 +2577,174 @@
       const issues = detectIssues(parsed);
       const missingTotal = Object.values(issues.missingByCol).reduce((a, b) => a + b, 0);
       const outlierTotal = Object.values(issues.outlierCountsByCol).reduce((a, b) => a + b, 0);
+      const duplicateCount = issues.duplicateCount || 0;
+      const whitespaceCount = issues.whitespaceCount || 0;
+      const inconsistentCapCount = issues.inconsistentCapCount || 0;
 
       const fields = parsed.fields;
       const labelColOptions = [''].concat(fields);
 
       container.innerHTML = `
-        <div class="space-y-4">
+      <div class="space-y-4">
 
-          <div class="bg-white border border-slate-200 rounded-lg p-4">
-            <h3 class="font-bold text-slate-800">Cleaning checklist</h3>
-            <p class="text-sm text-slate-600 mt-1">You choose the decisions. The tool applies them and prepares a cleaned CSV.</p>
+        <div class="bg-white border border-slate-200 rounded-lg p-4">
+          <h3 class="font-bold text-slate-800 mb-2">Data quality overview</h3>
+          <p class="text-sm text-slate-600 mb-3">Detected issues that may need cleaning:</p>
 
-            <div class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
-                <div class="text-xs font-bold text-slate-500 uppercase">Missing cells</div>
-                <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${missingTotal}</div>
-              </div>
-              <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
-                <div class="text-xs font-bold text-slate-500 uppercase">Outlier values</div>
-                <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${outlierTotal}</div>
-              </div>
-              <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
-                <div class="text-xs font-bold text-slate-500 uppercase">Numeric columns</div>
-                <div class="text-2xl font-extrabold text-slate-800 tabular-nums">${parsed.stats.overall.numericFields.length}</div>
-              </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            ${missingTotal > 0 ? `
+            <div class="bg-amber-50 border-2 border-amber-300 rounded-lg p-3">
+              <div class="text-xs font-bold text-amber-700 uppercase">Missing cells</div>
+              <div class="text-2xl font-extrabold text-amber-900 tabular-nums">${missingTotal}</div>
             </div>
-          </div>
-
-          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
-            <h3 class="font-bold text-slate-800">1) Missing values</h3>
-            <p class="text-sm text-slate-600 mt-1">Choose one approach.</p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <button data-missing="delete_rows" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.missing === 'delete_rows' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Delete rows with missing</button>
-              <button data-missing="fill" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.missing === 'fill' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Fill missing values</button>
+            ` : ''}
+            ${outlierTotal > 0 ? `
+            <div class="bg-orange-50 border-2 border-orange-300 rounded-lg p-3">
+              <div class="text-xs font-bold text-orange-700 uppercase">Outlier values</div>
+              <div class="text-2xl font-extrabold text-orange-900 tabular-nums">${outlierTotal}</div>
             </div>
-            <div class="mt-2 text-sm text-[var(--color-text-muted)]">If you fill missing values, numeric columns use the column mean. Other columns use “unknown”.</div>
-          </div>
-
-          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
-            <h3 class="font-bold text-slate-800">2) Outliers</h3>
-            <p class="text-sm text-slate-600 mt-1">Choose one approach.</p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <button data-outliers="remove" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.outliers === 'remove' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Remove outlier rows</button>
-              <button data-outliers="keep" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.outliers === 'keep' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Keep all (highlight outliers)</button>
+            ` : ''}
+            ${duplicateCount > 0 ? `
+            <div class="bg-purple-50 border-2 border-purple-300 rounded-lg p-3">
+              <div class="text-xs font-bold text-purple-700 uppercase">Duplicate rows</div>
+              <div class="text-2xl font-extrabold text-purple-900 tabular-nums">${duplicateCount}</div>
             </div>
-            <div class="mt-2 text-sm text-[var(--color-text-muted)]">Outliers are values more than 3 standard deviations from the column mean (numeric columns only).</div>
-          </div>
-
-          <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
-            <h3 class="font-bold text-slate-800">3) Label consistency (optional)</h3>
-            <p class="text-sm text-slate-600 mt-1">If you have a label column (for categories), you can standardise it.</p>
-
-            <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label class="text-xs font-bold text-slate-500 uppercase">Label column</label>
-                <div class="relative mt-1">
-                  <select id="label-col" class="appearance-none bg-white border border-slate-300 text-slate-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 pr-8 cursor-pointer">
-                    ${labelColOptions.map(c => `<option value="${escapeHtml(c)}" ${c === state.clean.plan.labelColumn ? 'selected' : ''}>${escapeHtml(c || '(none)')}</option>`).join('')}
-                  </select>
-                  <i data-lucide="chevron-down" class="absolute right-2 top-3 w-4 h-4 text-slate-500 pointer-events-none"></i>
-                </div>
-              </div>
-              <div>
-                <label class="text-xs font-bold text-slate-500 uppercase">Standardise</label>
-                <div class="mt-2 flex flex-wrap gap-2">
-                  <button data-label="lower_trim" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.labelStandardise === 'lower_trim' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Trim + lowercase</button>
-                  <button data-label="none" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.labelStandardise === 'none' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Do not change</button>
-                </div>
-              </div>
+            ` : ''}
+            ${whitespaceCount > 0 ? `
+            <div class="bg-blue-50 border-2 border-blue-300 rounded-lg p-3">
+              <div class="text-xs font-bold text-blue-700 uppercase">Whitespace issues</div>
+              <div class="text-2xl font-extrabold text-blue-900 tabular-nums">${whitespaceCount}</div>
             </div>
+            ` : ''}
+            ${inconsistentCapCount > 0 ? `
+            <div class="bg-pink-50 border-2 border-pink-300 rounded-lg p-3">
+              <div class="text-xs font-bold text-pink-700 uppercase">Case Conflicts</div>
+              <div class="text-2xl font-extrabold text-pink-900 tabular-nums">${inconsistentCapCount}</div>
+            </div>
+            ` : ''}
+            ${(missingTotal === 0 && outlierTotal === 0 && duplicateCount === 0 && whitespaceCount === 0 && inconsistentCapCount === 0) ? `
+            <div class="col-span-full text-sm text-emerald-600 font-medium flex items-center gap-2">
+              <i data-lucide="check-circle" class="w-5 h-5"></i>
+              <span>No issues detected - your data looks clean!</span>
+            </div>
+            ` : ''}
           </div>
-
-          <div class="flex items-center flex-wrap gap-2">
-            <button id="apply-cleaning" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">Apply cleaning</button>
-            <button id="download-cleaned" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed" disabled>Download cleaned CSV</button>
-            <span id="clean-status" class="text-sm text-slate-600"></span>
-          </div>
-
-          <div id="clean-preview" class="space-y-3"></div>
         </div>
+
+        ${(missingTotal > 0) ? `
+        <div class="bg-amber-50 border-2 border-amber-200 rounded-lg p-4">
+          <h3 class="font-bold text-slate-800">Missing values</h3>
+          <p class="text-sm text-slate-600 mt-1">${missingTotal} cells with missing data detected. Choose how to handle them.</p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button data-missing="delete_rows" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.missing === 'delete_rows' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Delete rows with missing</button>
+            <button data-missing="fill" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.missing === 'fill' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Fill missing values</button>
+          </div>
+          <div class="mt-2 text-sm text-amber-700">
+            <i data-lucide="info" class="inline w-3.5 h-3.5"></i>
+            Numeric columns will be filled with column mean, text columns with "unknown".
+          </div>
+        </div>
+        ` : ''}
+
+        ${(outlierTotal > 0) ? `
+        <div class="bg-orange-50 border-2 border-orange-200 rounded-lg p-4">
+          <h3 class="font-bold text-slate-800">Outliers</h3>
+          <p class="text-sm text-slate-600 mt-1">${outlierTotal} outlier values detected (>3 standard deviations from mean). Choose how to handle them.</p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button data-outliers="remove" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.outliers === 'remove' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Remove outlier rows</button>
+            <button data-outliers="keep" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.outliers === 'keep' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Keep all (highlight outliers)</button>
+          </div>
+          <div class="mt-2 text-sm text-orange-700">
+            <i data-lucide="info" class="inline w-3.5 h-3.5"></i>
+            Applies to numeric columns only. Statistical outliers may represent real data.
+          </div>
+        </div>
+        ` : ''}
+
+        ${(duplicateCount > 0) ? `
+        <div class="bg-purple-50 border-2 border-purple-200 rounded-lg p-4">
+          <h3 class="font-bold text-slate-800">Duplicate rows</h3>
+          <p class="text-sm text-slate-600 mt-1">${duplicateCount} exact duplicate rows detected. Choose how to handle them.</p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button data-duplicates="remove" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.duplicates === 'remove' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Remove duplicates</button>
+            <button data-duplicates="keep" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.duplicates === 'keep' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Keep all</button>
+          </div>
+          <div class="mt-2 text-sm text-purple-700">
+            <i data-lucide="info" class="inline w-3.5 h-3.5"></i>
+            Rows with identical values in all columns will be removed (keeps first occurrence).
+          </div>
+        </div>
+        ` : ''}
+
+        ${(whitespaceCount > 0) ? `
+        <div class="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
+          <h3 class="font-bold text-slate-800">Whitespace</h3>
+          <p class="text-sm text-slate-600 mt-1">${whitespaceCount} cells with leading/trailing spaces detected. Choose how to handle them.</p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button data-whitespace="trim" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.whitespace === 'trim' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Trim whitespace</button>
+            <button data-whitespace="keep" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.whitespace === 'keep' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Keep as-is</button>
+          </div>
+          <div class="mt-2 text-sm text-blue-700">
+            <i data-lucide="info" class="inline w-3.5 h-3.5"></i>
+            Removes leading and trailing spaces from text columns (like pandas .str.strip()).
+          </div>
+        </div>
+        ` : ''}
+
+        <div class="${inconsistentCapCount > 0 ? 'bg-pink-50 border-2 border-pink-200' : 'bg-slate-50 border border-slate-200'} rounded-lg p-4">
+          <h3 class="font-bold text-slate-800">Capitalisation & Consistency</h3>
+          <p class="text-sm text-slate-600 mt-1">
+            ${inconsistentCapCount > 0 
+              ? `<strong>Warning:</strong> ${inconsistentCapCount} values have inconsistent capitalisation (e.g. "Pass" vs "pass"). Standardising is recommended.` 
+              : 'Standardize text capitalisation across all text columns.'}
+          </p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button data-capitalization="lower" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.capitalization === 'lower' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Lowercase all</button>
+            <button data-capitalization="capitalize" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.capitalization === 'capitalize' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Capitalise</button>
+            <button data-capitalization="keep" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.capitalization === 'keep' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Keep as-is</button>
+          </div>
+          <div class="mt-2 text-sm ${inconsistentCapCount > 0 ? 'text-pink-700' : 'text-slate-600'}">
+            <i data-lucide="info" class="inline w-3.5 h-3.5"></i>
+            Like pandas .str.lower() or .str.capitalize() - applies to all text columns.
+          </div>
+        </div>
+
+        <div class="bg-slate-50 border border-slate-200 rounded-lg p-4">
+          <h3 class="font-bold text-slate-800">Target Column Encoding (optional)</h3>
+          <p class="text-sm text-slate-600 mt-1">Convert text labels (e.g. "Yes/No") into numbers (e.g. "1/0") for training.</p>
+
+          <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs font-bold text-slate-500 uppercase">Target column</label>
+              <div class="relative mt-1">
+                <select id="label-col" class="appearance-none bg-white border border-slate-300 text-slate-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5 pr-8 cursor-pointer">
+                  ${labelColOptions.map(c => `<option value="${escapeHtml(c)}" ${c === (state.clean.plan.labelColumn || state.collect.plan.labelColumn) ? 'selected' : ''}>${escapeHtml(c || '(none)')}</option>`).join('')}
+                </select>
+                <i data-lucide="chevron-down" class="absolute right-2 top-3 w-4 h-4 text-slate-500 pointer-events-none"></i>
+              </div>
+            </div>
+            <div>
+              <label class="text-xs font-bold text-slate-500 uppercase">Action</label>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button data-encoding="auto" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.labelEncoding === 'auto' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Encode to numbers</button>
+                <button data-encoding="none" class="clean-choice px-3 py-2 rounded-lg border text-sm font-semibold ${state.clean.plan.labelEncoding === 'none' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}">Keep as text</button>
+              </div>
+            </div>
+          </div>
+          <div class="mt-2 text-sm text-slate-600">
+            <i data-lucide="info" class="inline w-3.5 h-3.5"></i>
+            Useful for classification. Example: "Apple"→0, "Banana"→1.
+          </div>
+        </div>
+
+        <div class="flex items-center flex-wrap gap-2">
+          <button id="apply-cleaning" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">Apply cleaning</button>
+          <button id="download-cleaned" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed" disabled>Download cleaned CSV</button>
+          <span id="clean-status" class="text-sm text-slate-600"></span>
+        </div>
+
+        <div id="clean-preview" class="space-y-3"></div>
+      </div>
       `;
 
       // Wire choices
@@ -1846,11 +2753,17 @@
           const el = e.currentTarget;
           const missing = el.getAttribute('data-missing');
           const outliers = el.getAttribute('data-outliers');
-          const label = el.getAttribute('data-label');
+          const duplicates = el.getAttribute('data-duplicates');
+          const whitespace = el.getAttribute('data-whitespace');
+          const capitalization = el.getAttribute('data-capitalization');
+          const encoding = el.getAttribute('data-encoding');
 
           if (missing) state.clean.plan.missing = missing;
           if (outliers) state.clean.plan.outliers = outliers;
-          if (label) state.clean.plan.labelStandardise = label;
+          if (duplicates) state.clean.plan.duplicates = duplicates;
+          if (whitespace) state.clean.plan.whitespace = whitespace;
+          if (capitalization) state.clean.plan.capitalization = capitalization;
+          if (encoding) state.clean.plan.labelEncoding = encoding;
 
           persistDebounced();
           renderAll();
@@ -1864,12 +2777,46 @@
 
       $('apply-cleaning').onclick = () => {
         const plan = state.clean.plan;
+        const issues = detectIssues(parsed);
 
-        if (!plan.missing || !plan.outliers) {
-          $('clean-status').textContent = 'Choose an option for missing values and outliers.';
+        // Only require decisions for detected issues
+        const missingTotal = Object.values(issues.missingByCol).reduce((a, b) => a + b, 0);
+        const outlierTotal = Object.values(issues.outlierCountsByCol).reduce((a, b) => a + b, 0);
+        const duplicateCount = issues.duplicateCount || 0;
+        const whitespaceCount = issues.whitespaceCount || 0;
+
+        // Validate required choices
+        if (missingTotal > 0 && !plan.missing) {
+          $('clean-status').textContent = 'Choose how to handle missing values.';
           $('clean-status').className = 'text-sm text-rose-700';
           return;
         }
+        if (outlierTotal > 0 && !plan.outliers) {
+          $('clean-status').textContent = 'Choose how to handle outliers.';
+          $('clean-status').className = 'text-sm text-rose-700';
+          return;
+        }
+        if (duplicateCount > 0 && !plan.duplicates) {
+          $('clean-status').textContent = 'Choose how to handle duplicate rows.';
+          $('clean-status').className = 'text-sm text-rose-700';
+          return;
+        }
+        if (whitespaceCount > 0 && !plan.whitespace) {
+          $('clean-status').textContent = 'Choose how to handle whitespace.';
+          $('clean-status').className = 'text-sm text-rose-700';
+          return;
+        }
+
+        // Optional fields can be null - set defaults
+        if (!plan.capitalization) plan.capitalization = 'keep';
+        if (!plan.labelEncoding) plan.labelEncoding = 'none';
+        if (!plan.labelColumn) plan.labelColumn = state.collect.plan.labelColumn || '';
+
+        // If no issues detected, still allow cleaning with optional settings
+        if (missingTotal === 0) plan.missing = null;
+        if (outlierTotal === 0) plan.outliers = null;
+        if (duplicateCount === 0) plan.duplicates = null;
+        if (whitespaceCount === 0) plan.whitespace = null;
 
         // If label standardise is chosen, label column must be set.
         if (plan.labelStandardise === 'lower_trim' && !plan.labelColumn) {
@@ -1947,7 +2894,7 @@
         return [
           {
             name: 'Linear Regression',
-            path: '../../widgets/linear-regression/index.html',
+            path: 'https://rnd-experiment-473900.web.app/linear.html',
             whenToUse: 'Use this when you are predicting a number (for example temperature, distance, or time).'
           }
         ];
@@ -1956,17 +2903,17 @@
         return [
           {
             name: 'Decision Tree',
-            path: '../../widgets/decision-tree/index.html',
+            path: 'https://rnd-experiment-473900.web.app/dt',
             whenToUse: 'Use this when you are predicting a category (for example safe/unsafe, healthy/unhealthy).'
           },
           {
             name: 'k-NN',
-            path: '../../widgets/knn/index.html',
+            path: 'https://rnd-experiment-473900.web.app/knn.html',
             whenToUse: 'Use this when similar examples should get the same label.'
           },
           {
             name: 'Logistic Regression',
-            path: '../../widgets/logistic-regression/index.html',
+            path: 'https://rnd-experiment-473900.web.app/logistic.html',
             whenToUse: 'Use this when you want a simple yes/no decision and you can measure clear numeric features.'
           }
         ];
@@ -1975,7 +2922,7 @@
         return [
           {
             name: 'K-Means',
-            path: '../../widgets/k-means/index.html',
+            path: 'https://rnd-experiment-473900.web.app/k-means.html',
             whenToUse: 'Use this when you want to find groups in the data without labels.'
           }
         ];
