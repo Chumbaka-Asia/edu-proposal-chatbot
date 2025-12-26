@@ -4,7 +4,7 @@
 **Student Name:** [Your Name]  
 **Grade/Age:** [Your Grade]  
 **Project Date:** [Month Year]  
-**Community Partner:** [Partner Name & Organization]
+**Community Partner:** [Partner Name & Organisation]
 
 ---
 
