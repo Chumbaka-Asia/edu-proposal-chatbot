@@ -749,6 +749,8 @@
       const cleaningContext = summariseCleaningForPrompt(state.clean?.cleaned);
       const widget = (state.train?.recommended || [])[0]?.name || '';
 
+      const collectPlan = state.collect?.plan || {};
+
       return [
         '<role>',
         'You are a mentor for 13–17 year old students building Arduino/ESP32 sensor projects to solve real community problems.',
@@ -769,6 +771,19 @@
         '<format_rules>',
         '- Use short labelled sections and bullet points where helpful.',
         '- Start with an "At a glance" block (3–6 bullets).',
+        '- The "At a glance" block MUST be derived from the Define stage inputs. Use ALL of these (do not ignore any):',
+        '  - Opportunity Statement (who/partner/community context)',
+        '  - Design Thinking Problem Statement (human problem + root cause)',
+        '  - Data-driven question (hypothesis framed for a model)',
+        '  - Success measure (the target threshold)',
+        '  - Plus: current training result/status if provided (e.g., accuracy).',
+        '- If any Define item is missing, write "(not provided)" rather than inventing details.',
+        '- Make the mapping explicit in the bullets. Example bullets (adapt to the student):',
+        '  - Community partner / user: ...',
+        '  - Problem (root cause): ...',
+        '  - Hypothesis (data-driven question): ...',
+        '  - Success target: ...',
+        '  - Status / best result so far: ...',
         '- Include a compact "Data checklist" that shows: label/target, key features, sampling/time window, where/when, how labels are made.',
         '- Include a compact "Model plan" (problem type, target, first widget to test, what metric you will record).',
         '- Include a compact "Deployment + safety" (what the device does, what happens after prediction, risks and mitigations).',
@@ -780,6 +795,15 @@
         `- Data-driven question (Define): ${(state.define?.problemStatement || '').trim() || '(not provided)'}`,
         `- Success measure (Define): ${(state.define?.successMeasure || '').trim() || '(not provided)'}`,
         `- Dataset file name: ${(state.collect?.csvFileName || '').trim() || '(not provided)'}`,
+        '',
+        'Collection plan inputs:',
+        `- Planned features (columns to collect): ${(collectPlan.requiredFeatures || '').trim() || '(not provided)'}`,
+        `- Planned label/target column: ${(collectPlan.labelColumn || '').trim() || '(not provided)'}`,
+        `- Labeling criteria (how labels are made): ${(collectPlan.labelingCriteria || '').trim() || '(not provided)'}`,
+        `- Context to record alongside readings: ${(collectPlan.contextToRecord || '').trim() || '(not provided)'}`,
+        `- When will you collect data?: ${(collectPlan.collectionPeriod || '').trim() || '(not provided)'}`,
+        `- Where will you collect data?: ${(collectPlan.collectionLocation || '').trim() || '(not provided)'}`,
+        `- Device/sensor details: ${(collectPlan.deviceInfo || '').trim() || '(not provided)'}`,
         datasetContext,
         '',
         cleaningContext,
@@ -795,6 +819,13 @@
         `- Alerts and action: ${(state.deploy?.alertPlan || '').trim() || '(not provided)'}`,
         `- Risk and safety plan: ${(state.deploy?.riskPlan || '').trim() || '(not provided)'}`,
         `- Improvement plan: ${(state.deploy?.improvementPlan || '').trim() || '(not provided)'}`,
+        '',
+        'Stage notes (student-written):',
+        `- Define notes: ${(state.notes?.define || '').trim() || '(none)'}`,
+        `- Collect notes: ${(state.notes?.collect || '').trim() || '(none)'}`,
+        `- Clean notes: ${(state.notes?.clean || '').trim() || '(none)'}`,
+        `- Train notes: ${(state.notes?.train || '').trim() || '(none)'}`,
+        `- Deploy notes: ${(state.notes?.deploy || '').trim() || '(none)'}`,
         '</student_inputs>'
       ].join('\n');
     }
@@ -822,6 +853,28 @@
       const text = data.text || (data.candidates?.[0]?.content?.parts?.[0]?.text);
       if (!text) throw new Error('No response text');
       return String(text).trim();
+    }
+
+    async function generateProposal() {
+      // Gemini-first, deterministic fallback.
+      let text = '';
+      try {
+        const systemPrompt = buildProposalSynthesisSystemPrompt();
+        text = await callGeminiWithSystemPrompt({
+          systemPrompt,
+          userText: 'Write the one-page proposal now. If you detect missing or incorrect information, include a short "Fix before submission" section at the end.'
+        });
+      } catch (err) {
+        console.warn('Proposal synthesis failed, falling back to deterministic proposal:', err);
+        text = buildProposalText();
+      }
+
+      state.proposal.text = text;
+      const proposalEl = $('proposal');
+      if (proposalEl) proposalEl.value = text;
+      persistDebounced();
+
+      return text;
     }
 
     function buildSystemPrompt() {
@@ -1713,7 +1766,9 @@
       $('stage-select').value = String(state.currentStageIndex);
 
       // Next button
-      $('stage-next').disabled = !canAdvance();
+      const isLastStage = s.key === 'deploy' || state.currentStageIndex === STAGES.length - 1;
+      $('stage-next').classList.toggle('hidden', isLastStage);
+      $('stage-next').disabled = isLastStage ? true : !canAdvance();
 
       // Loop back button should be visible when any later stage is open (i.e. current stage > 0)
       const showLoop = state.currentStageIndex > 0;
@@ -3122,20 +3177,7 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
         $('deploy-status').textContent = 'Generating proposal…';
         $('deploy-status').className = 'text-sm text-slate-600';
 
-        let text = '';
-        try {
-          const systemPrompt = buildProposalSynthesisSystemPrompt();
-          text = await callGeminiWithSystemPrompt({
-            systemPrompt,
-            userText: 'Write the one-page proposal now. If you detect missing or incorrect information, include a short "Fix before submission" section at the end.'
-          });
-        } catch (err) {
-          console.warn('Proposal synthesis failed, falling back to deterministic proposal:', err);
-          text = buildProposalText();
-        }
-
-        state.proposal.text = text;
-        $('proposal').value = text;
+        const text = await generateProposal();
 
         // Notes
         if (!(state.notes.deploy || '').trim()) {
@@ -3159,10 +3201,20 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
       const now = new Date();
       const dateStr = now.toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: '2-digit' });
 
+      const opportunity = (state.define.opportunityStatement || '').trim() || '(not provided)';
+      const designThinking = (state.define.designThinkingProblemStatement || '').trim() || '(not provided)';
       const ps = (state.define.problemStatement || '').trim() || '(not provided)';
       const success = (state.define.successMeasure || '').trim() || '(not provided)';
 
       const datasetName = (state.collect.csvFileName || '').trim() || '(not provided)';
+      const collectPlan = state.collect.plan || {};
+      const planFeatures = (collectPlan.requiredFeatures || '').trim() || '(not provided)';
+      const planLabelColumn = (collectPlan.labelColumn || '').trim() || '(not provided)';
+      const planLabelingCriteria = (collectPlan.labelingCriteria || '').trim() || '(not provided)';
+      const planContextToRecord = (collectPlan.contextToRecord || '').trim() || '(not provided)';
+      const planPeriod = (collectPlan.collectionPeriod || '').trim() || '(not provided)';
+      const planLocation = (collectPlan.collectionLocation || '').trim() || '(not provided)';
+      const planDevice = (collectPlan.deviceInfo || '').trim() || '(not provided)';
       const parsed = state.collect.parsed;
       const rows = parsed?.stats?.overall?.rows;
       const cols = parsed?.stats?.overall?.cols;
@@ -3191,6 +3243,8 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
         `Date: ${dateStr}`,
         '',
         '1) Problem definition',
+        `Opportunity Statement: ${opportunity}`,
+        `Design Thinking Problem Statement: ${designThinking}`,
         `Data-driven question: ${ps}`,
         `Success measure: ${success}`,
         noteDefine ? `Notes: ${noteDefine}` : null,
@@ -3199,6 +3253,15 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
         `Dataset file: ${datasetName}`,
         (Number.isFinite(rows) && Number.isFinite(cols)) ? `Dataset size: ${rows} rows, ${cols} columns` : null,
         (Number.isFinite(missingPct)) ? `Missing cells (before cleaning): ${missingPct.toFixed(1)}%` : null,
+        '',
+        'Collection plan',
+        `Planned features (columns):\n${planFeatures}`,
+        `Planned label/target column: ${planLabelColumn}`,
+        `Labeling criteria (how labels are made):\n${planLabelingCriteria}`,
+        `Context to record: \n${planContextToRecord}`,
+        `When (collection period): ${planPeriod}`,
+        `Where (collection location): ${planLocation}`,
+        `Device/sensor: ${planDevice}`,
         noteCollect ? `Notes: ${noteCollect}` : null,
         '',
         '3) Data cleaning plan',
@@ -3224,6 +3287,41 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
       ].filter(x => x !== null).join('\n');
 
       return proposal;
+    }
+
+    function buildChatTranscriptText() {
+      const msgs = state.messages || [];
+      if (!msgs.length) return '(no chat messages)';
+
+      const lines = msgs.map(m => {
+        const who = (m.role === 'user') ? 'Student' : 'Mentor';
+        const stage = STAGES.find(s => s.key === m.stageKey)?.name || 'Stage';
+        return `[${stage}] ${who}: ${m.content}`;
+      });
+
+      return lines.join('\n\n');
+    }
+
+    function buildExportText() {
+      const now = new Date();
+      const exportedAt = (() => {
+        try { return now.toLocaleString(); } catch { return String(now); }
+      })();
+
+      const proposalText = ($('proposal')?.value || '').trim() || buildProposalText();
+      const chatText = buildChatTranscriptText();
+
+      return [
+        'DSLC Proposal Chatbot export',
+        `Exported: ${exportedAt}`,
+        '',
+        '--- Proposal ---',
+        proposalText,
+        '',
+        '--- Chat transcript ---',
+        chatText,
+        ''
+      ].join('\n');
     }
 
     function renderStageContent() {
@@ -3256,7 +3354,11 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
 
       // Update stage completion flags
       markCompletedIfReady();
-      $('stage-next').disabled = !canAdvance();
+      {
+        const s = STAGES[state.currentStageIndex];
+        const isLastStage = s?.key === 'deploy' || state.currentStageIndex === STAGES.length - 1;
+        $('stage-next').disabled = isLastStage ? true : !canAdvance();
+      }
 
       // Icons
       if (window.lucide?.createIcons) window.lucide.createIcons();
@@ -3349,20 +3451,30 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
       });
 
       $('copy-chat').addEventListener('click', () => {
-        const lines = state.messages.map(m => {
-          const who = (m.role === 'user') ? 'Student' : 'Mentor';
-          const stage = STAGES.find(s => s.key === m.stageKey)?.name || 'Stage';
-          return `[${stage}] ${who}: ${m.content}`;
-        });
-        copyText(lines.join('\n\n'));
+        copyText(buildChatTranscriptText());
       });
 
-      $('regen-proposal').addEventListener('click', () => {
-        const text = buildProposalText();
-        state.proposal.text = text;
-        $('proposal').value = text;
-        persistDebounced();
-        toast('Proposal refreshed');
+      $('regen-proposal').addEventListener('click', async () => {
+        const btn = $('regen-proposal');
+        btn.disabled = true;
+        toast('Generating proposal…');
+
+        try {
+          await generateProposal();
+
+          // If the student is currently in Deploy, rerender so completion/progress/UI reflect immediately.
+          if (STAGES[state.currentStageIndex]?.key === 'deploy') {
+            markCompletedIfReady();
+            renderAll();
+          } else {
+            // Keep this lightweight to avoid re-rendering the current stage while the student is typing.
+            $('export-proposal').disabled = !(($('proposal')?.value || '').trim().length > 0);
+          }
+
+          toast('Proposal updated');
+        } finally {
+          btn.disabled = false;
+        }
       });
 
       $('copy-proposal').addEventListener('click', () => copyText($('proposal').value || ''));
@@ -3374,8 +3486,8 @@ Bad example: &quot;If sensor value is low, label as Pass.&quot; (This is circula
       });
 
       $('export-proposal').addEventListener('click', () => {
-        const text = $('proposal').value || buildProposalText();
-        downloadFile(text, 'proposal.txt', 'text/plain;charset=utf-8');
+        const text = buildExportText();
+        downloadFile(text, 'proposal_with_chat_transcript.txt', 'text/plain;charset=utf-8');
       });
 
       $('reset-session').addEventListener('click', async () => {
