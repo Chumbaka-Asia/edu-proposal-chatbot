@@ -1,14 +1,24 @@
-# [YOUR PROJECT TITLE HERE]
+# [YOUR PROJECT TITLE]
 ## Data Science Lifecycle Project Proposal
 
 **Student Name:** [Your Name]  
-**Grade/Age:** [Your Grade]  
-**Project Date:** [Month Year]  
+**Age:** [Your Age]  
 **Community Partner:** [Partner Name & Organisation]
 
 ---
 
-## PROJECT AT A GLANCE
+## Table of Contents
+
+- [Project at a Glance](#project-at-a-glance)
+- [My Story: Why This Project Matters](#my-story-why-this-project-matters)
+- [My Approach: The Data Science Method](#my-approach-the-data-science-method)
+- [Cleaning My Data: Making It Ready](#cleaning-my-data-making-it-ready)
+- [Training the Model: Teaching the Computer](#training-the-model-teaching-the-computer)
+- [Deployment: Making It Real](#deployment-making-it-real)  
+
+---
+
+## Project at a Glance
 
 **The Challenge:** [1-2 sentences: Who faces what problem?]
 
@@ -20,7 +30,7 @@
 
 ---
 
-## THE STORY: Why This Project Matters
+## My Story: Why This Project Matters
 
 ### The Problem I Discovered
 [2-3 paragraphs telling the story of:
@@ -38,7 +48,7 @@ After understanding the problem, I asked myself:
 
 ---
 
-## MY APPROACH: The Data Science Method
+## My Approach: The Data Science Method
 
 ### What I Measured
 To answer my question, I needed to collect data about:
@@ -47,7 +57,7 @@ To answer my question, I needed to collect data about:
 - **Context Information:** [Other factors you tracked - like location, time, material type]
 - **The Label:** [What you were trying to predict - Acceptable/Not Acceptable, etc.]
 
-### How I Got Ground Truth
+### How I Created Reliable Labels
 [Explain in 2-3 sentences how you created reliable labels for your data. What objective rules did you use? Who helped verify the labels?]
 
 **Example:** "Padmani and her team examined each saree using two checks: (1) Is fading clearly visible? (2) Is fraying more than 5 cm? If both answers were 'No,' we labeled the saree as Acceptable."
@@ -69,9 +79,24 @@ Each row in my dataset contains:
 - Target Label: [what you're predicting]
 ```
 
+### Initial Dataset Snapshot
+
+Here's a preview of my dataset:
+
+| Feature 1       | Feature 2       | Feature 3       | Target Label   |
+|-----------------|-----------------|-----------------|----------------|
+| [Value]         | [Value]         | [Value]         | [Label]        |
+| [Value]         | [Value]         | [Value]         | [Label]        |
+| [Value]         | [Value]         | [Value]         | [Label]        |
+
+Key statistics about my data:
+- **Total Samples:** [number]
+- **Class Distribution:** [e.g., "70% Acceptable, 30% Not Acceptable"]
+- **Median/Mean Values:** [any relevant stats]
+
 ---
 
-## CLEANING MY DATA: Making It Ready
+## Cleaning My Data: Making It Ready
 
 ### Challenges I Found
 When I first looked at my data, I discovered:
@@ -93,7 +118,7 @@ After cleaning:
 
 ---
 
-## TRAINING THE MODEL: Teaching the Computer
+## Training the Model: Teaching the Computer
 
 ### Algorithm Choice
 I chose **[Algorithm Name]** because: [1-2 sentences explaining why this algorithm fits your problem]
@@ -113,10 +138,10 @@ My model achieved:
 
 ---
 
-## DEPLOYMENT: Making It Real
+## Deployment: Making It Real
 
 ### Where It Will Be Used
-[Describe the real-world setting where your solution will operate. Be specific about location and context.]
+[Describe the real-world setting where your solution will operate. Be specific about location and context. For the pilot version, consider using a smaller setting.]
 
 ### How It Works
 When someone uses my system:
@@ -145,7 +170,7 @@ To make my system better over time:
 
 ---
 
-## WHAT I LEARNED
+## What I Learned
 
 ### Technical Skills
 Through this project, I learned:
@@ -159,12 +184,12 @@ The most surprising thing I discovered: [1-2 sentences about an unexpected findi
 ### What I'd Do Differently
 If I started over, I would: [1-2 sentences about improvements or changes you'd make]
 
+### What I'm Still Working On
+Right now, I'm focusing on: [1-2 sentences about ongoing challenges or next steps]
+
 ---
 
-## APPENDIX: Technical Details
-
-### Data Summary
-[Include a small table or list with key statistics about your dataset]
+## Appendix
 
 ### Model Performance Details
 [If you tested multiple models or want to show more detailed metrics, include them here]
@@ -174,7 +199,7 @@ If I started over, I would: [1-2 sentences about improvements or changes you'd m
 
 ---
 
-## ACKNOWLEDGMENTS
+## Acknowledgements
 
 I'd like to thank:
 - **[Community Partner Name]** for [specific contribution]
@@ -184,4 +209,4 @@ I'd like to thank:
 ---
 
 **Contact Information:**  
-[Your Email] | [Optional: GitHub/Project Portfolio Link]
+[Your Email] | [Optional: GitHub Link]

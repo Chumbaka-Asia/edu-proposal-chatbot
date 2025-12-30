@@ -13,23 +13,26 @@ The Data Science Lifecycle (DSLC) chatbot is your digital mentor that guides you
 
 ### Step 1 - Access the DSLC chatbot
 
-1. Open the DSLC chatbot in a new tab: https://dslc-chatbot.web.app/
-
-    Bookmark this page for future reference.
-
-2. The chat panel on the left side is where you'll interact with your AI mentor.
-
-3. The middle panel is where you will fill in the details for your proposal.
-
-4. The right panel shows your progress through the five stages of the Data Science Lifecycle: Define, Collect, Clean, Train, and Deploy.
+1. Open the DSLC chatbot in a new tab: <a href="https://dslc-chatbot.web.app/" target="_blank">https://dslc-chatbot.web.app/</a>
 
     <img src="./images/dslc-chatbot-ui.png" alt="DSLC Chatbot User Interface" width="600"/>
+
+    - The chat panel on the left side is where you'll interact with your AI mentor.
+
+    - The middle panel is where you will fill in the details for your proposal.
+
+    - The right panel shows your progress through the five stages of the Data Science Lifecycle: Define, Collect, Clean, Train, and Deploy.
+
+
+2. Bookmark this page for future reference.
 
 ### Step 2 - Define your research question
 
 1. You start at the **Define** stage.
 
-    Read through the four segments that help you build your problem statement.
+    > 💡 You've already identified a cause, found an organisation working on it, and selected a community partner from that organisation. Use that as the foundation to build your problem statement.   
+
+    The four segments help you build your problem statement.
 
     Notice how each segment builds on the previous one, from broad opportunity to specific data question.
 
@@ -43,13 +46,11 @@ The Data Science Lifecycle (DSLC) chatbot is your digital mentor that guides you
     
     Example: *Madam Suppiah is a founder of sareeUP who faces the problem of unused and discarded sarees ending up in landfills instead of being upcycled into new products.*
 
-    > 💡 In the competition, you identify a person who has dedicated their life to a cause in their community.
-
 3. Develop your **Design Thinking Problem Statement**.
 
     Use the structure '[Person], a [Characteristic], faces the problem of [what] at [where] during [when] through [how] because [root cause]'
 
-    Example: *Madam Suppiah, a founder of sareeUP, faces the problem of too many unusable (faded/frayed) sarees clogging the upcycling pipeline at collection centers during sorting through subjective human judgment because there is a lack of objective, rapid assessment of fabric condition.*
+    Example: *Madam Suppiah, a founder of sareeUP, faces the problem of too many unusable (faded/frayed) sarees clogging the upcycling pipeline at collection centres during sorting through subjective human judgment because there is a lack of objective, fast assessment of fabric condition.*
 
     Discuss with the chatbot if you need help identifying the root cause.
 
@@ -61,7 +62,7 @@ The Data Science Lifecycle (DSLC) chatbot is your digital mentor that guides you
 
     Use the structure 'Can we [classify/predict/detect] [target] using [data] to determine [outcome]?'
 
-    Example: *Can we classify acceptable vs. unacceptable sarees using light reflection and transmittance data to determine whether a saree is suitable for upcycling?*
+    Example: *Can we classify acceptable versus unacceptable sarees using light reflection and transmittance data to determine whether a saree is suitable for upcycling?*
 
     Use the chat to refine this statement until it's clear and data-focused.
 
